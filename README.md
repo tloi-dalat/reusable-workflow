@@ -1,8 +1,7 @@
-# reuse-workflow
+# reusable-workflow
 
 Shared GitHub Actions workflows for every TLOI service. App repos keep only thin
-callers; everything that builds, pushes or deploys lives here. Same shape as
-Cake's `reuse-workflow`, rebuilt for TLOI.
+callers; everything that builds, pushes or deploys lives here.
 
 ```
 app repo (push to main)
@@ -32,7 +31,7 @@ CI never holds a cluster credential. Its only write is a git commit to control-p
 jobs:
   site:
     permissions: { contents: read, packages: write }
-    uses: tloi-dalat/reuse-workflow/.github/workflows/build-push.yaml@main
+    uses: tloi-dalat/reusable-workflow/.github/workflows/build-push.yaml@main
     with:
       image: oj-site                     # → ghcr.io/tloi-dalat/oj-site
       dockerfile: Dockerfile
@@ -51,10 +50,10 @@ Outputs: `version` (the tag), `image`, `digest` (empty when not pushed).
 ```yaml
   deploy-dev:
     needs: [site]
-    uses: tloi-dalat/reuse-workflow/.github/workflows/dispatch.yaml@main
+    uses: tloi-dalat/reusable-workflow/.github/workflows/dispatch.yaml@main
     with:
-      apps: site,bridge,celery            # directories under clusters/<env>/<namespace>/
-      namespace: oj
+      apps: django,wsevent                # directories under clusters/<env>/<namespace>/
+      namespace: online-judge
       environment: dev                    # dev | prd
       version: ${{ needs.site.outputs.version }}
     secrets:
@@ -63,9 +62,9 @@ Outputs: `version` (the tag), `image`, `digest` (empty when not pushed).
 
 ## One-time setup
 
-1. **Make this repo public**, or keep it private and allow access from the org:
-   *Settings → Actions → General → Access → "Accessible from repositories in the tloi-dalat organization"*.
-   It holds no secrets.
+1. **Keep this repo public.** The app repos that call it (`online-judge`, `judge-server`) are public,
+   and GitHub doesn't let a public repo call workflows stored in a private one. The org-access
+   setting only helps private callers. This repo holds no secrets.
 2. **`CONTROL_PLANE_TOKEN`**: an org secret, or a secret in each app repo. Use a fine-grained PAT
    (or GitHub App) scoped to **`tloi-dalat/control-plane` only**, with **Contents: Read and write**.
    That's all `repository_dispatch` needs.
