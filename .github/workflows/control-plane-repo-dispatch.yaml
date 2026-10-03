@@ -1,0 +1,89 @@
+# Receiver side of dispatch.yaml. Called from control-plane's repo-dispatch.yml
+# on `repository_dispatch: [sync-version]`; reads the caller's event payload,
+# bumps image.tag in each app's values.yaml, commits and pushes to main.
+# ArgoCD notices the commit and rolls the workload.
+#
+# Caller needs:  permissions: { contents: write }
+name: control-plane-repo-dispatch
+on:
+  workflow_call:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # Two apps finishing at once must not race on `git push`.
+    concurrency:
+      group: control-plane-sync
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Update image tags
+        env:
+          APPS: ${{ github.event.client_payload.apps }}
+          NAMESPACE: ${{ github.event.client_payload.namespace }}
+          ENVIRONMENT: ${{ github.event.client_payload.environment }}
+          VERSION: ${{ github.event.client_payload.version }}
+          DIGEST: ${{ github.event.client_payload.digest }}
+          ACTOR: ${{ github.event.client_payload.actor }}
+          SOURCE: ${{ github.event.client_payload.source }}
+          SHA: ${{ github.event.client_payload.sha }}
+        run: |
+          set -euo pipefail
+          # The payload decides which files get written, so validate every field
+          # before it touches a path.
+          [[ "$APPS"        =~ ^[a-z0-9-]+(,[a-z0-9-]+)*$ ]] || { echo "::error::bad apps: $APPS"; exit 1; }
+          [[ "$NAMESPACE"   =~ ^[a-z0-9-]+$ ]]               || { echo "::error::bad namespace: $NAMESPACE"; exit 1; }
+          [[ "$ENVIRONMENT" =~ ^(dev|prd)$ ]]                || { echo "::error::bad environment: $ENVIRONMENT"; exit 1; }
+          [[ "$VERSION"     =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || { echo "::error::bad version: $VERSION"; exit 1; }
+          [[ -z "$DIGEST" || "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]  || { echo "::error::bad digest: $DIGEST"; exit 1; }
+
+          # Rewrite exactly ONE line (`  <key>: …` inside the top-level `image:`
+          # block) and leave the rest of the file byte-for-byte, so each deploy
+          # commit is a one-line diff that's easy to read and to revert.
+          # (yq -i would re-format the whole file.)
+          set_image_field() {
+            local f=$1 key=$2 val=$3 tmp
+            tmp=$(mktemp)
+            if ! awk -v key="$key" -v val="$val" '
+                  /^[^[:space:]#]/ { inimg = ($0 ~ /^image:[[:space:]]*(#.*)?$/) }
+                  inimg && !done && $0 ~ ("^  " key ":") { print "  " key ": " val; done = 1; next }
+                  { print }
+                  END { exit done ? 0 : 3 }' "$f" > "$tmp"; then
+              rm -f "$tmp"
+              echo "::error file=${f}::no '  ${key}:' line under top-level 'image:' (2-space indent) — add one"
+              exit 1
+            fi
+            mv "$tmp" "$f"
+            # Read it back through a real YAML parser.
+            [[ "$(yq ".image.${key}" "$f")" == "$val" ]] || { echo "::error file=${f}::image.${key} did not update"; exit 1; }
+          }
+
+          IFS=',' read -ra apps <<< "$APPS"
+          for app in "${apps[@]}"; do
+            f="clusters/${ENVIRONMENT}/${NAMESPACE}/${app}/values.yaml"
+            [[ -f "$f" ]] || { echo "::error::no such app: $f"; exit 1; }
+            set_image_field "$f" tag "$VERSION"
+            [[ -z "$DIGEST" ]] || set_image_field "$f" digest "$DIGEST"   # prd files carry a `digest: ""` line
+            echo "  $f → $VERSION"
+          done
+
+          if git diff --quiet; then
+            echo "Already at ${VERSION}; nothing to commit."
+            exit 0
+          fi
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "[BOT] ${ENVIRONMENT}/${NAMESPACE}: ${APPS} → ${VERSION}" \
+                     -m "Requested by ${ACTOR} from ${SOURCE}@${SHA}"
+
+          for attempt in 1 2 3 4 5; do
+            git pull --rebase --quiet origin main && git push origin HEAD:main && exit 0
+            echo "push attempt ${attempt} failed; retrying"; sleep $((attempt * 3))
+          done
+          echo "::error::could not push after 5 attempts"; exit 1

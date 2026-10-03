@@ -1,0 +1,190 @@
+# Build a container image and (optionally) push it to GHCR with an immutable tag.
+#
+#   image    ghcr.io/<owner>/<inputs.image>
+#   tag      <branch>-<sha7>  (e.g. main-a1b2c3d)   or the git tag on tag pushes
+#
+# Multi-arch builds run each platform on its own native runner (no QEMU), push
+# by digest, then stitch one manifest list — the approach judge-server's
+# docker.yml already used, generalised.
+#
+# Caller needs:  permissions: { contents: read, packages: write }
+name: build-push
+on:
+  workflow_call:
+    inputs:
+      image:
+        description: Image name under ghcr.io/<owner>/ (e.g. oj-site)
+        type: string
+        required: true
+      context:
+        type: string
+        default: .
+      dockerfile:
+        type: string
+        default: Dockerfile
+      platforms:
+        description: JSON list, e.g. '["linux/amd64","linux/arm64"]'
+        type: string
+        default: '["linux/amd64"]'
+      build-args:
+        description: Newline-separated KEY=VALUE
+        type: string
+        default: ''
+      submodules:
+        description: Passed to actions/checkout (false | true | recursive)
+        type: string
+        default: 'false'
+      push:
+        description: false = build only (pull requests)
+        type: boolean
+        default: true
+    outputs:
+      version:
+        description: The tag that was (or would have been) pushed
+        value: ${{ jobs.meta.outputs.version }}
+      image:
+        value: ${{ jobs.meta.outputs.image }}
+      digest:
+        description: Manifest digest (empty when push is false)
+        value: ${{ jobs.merge.outputs.digest }}
+
+jobs:
+  meta:
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - id: meta
+        env:
+          OWNER: ${{ github.repository_owner }}
+          IMAGE: ${{ inputs.image }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$IMAGE" =~ ^[a-z0-9]+([._-][a-z0-9]+)*$ ]]; then
+            echo "::error::invalid image name: $IMAGE"; exit 1
+          fi
+          if [[ "$REF_TYPE" == "tag" ]]; then
+            version="$REF_NAME"
+          else
+            branch="${REF_NAME//[^a-zA-Z0-9._-]/-}"
+            version="${branch}-${SHA::7}"
+          fi
+          echo "image=ghcr.io/${OWNER,,}/${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "Building ghcr.io/${OWNER,,}/${IMAGE}:${version}"
+
+  build:
+    needs: meta
+    strategy:
+      fail-fast: true
+      matrix:
+        platform: ${{ fromJSON(inputs.platforms) }}
+    runs-on: ${{ matrix.platform == 'linux/arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: ${{ inputs.submodules }}
+          persist-credentials: false
+
+      - name: Platform slug
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: echo "PLATFORM_PAIR=${PLATFORM//\//-}" >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx-action@v4
+
+      - if: inputs.push
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          platforms: ${{ matrix.platform }}
+          build-args: ${{ inputs.build-args }}
+          # The source label also links the GHCR package to this repository.
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ needs.meta.outputs.version }}
+          outputs: ${{ inputs.push && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', needs.meta.outputs.image) || 'type=cacheonly' }}
+          cache-from: type=gha,scope=${{ inputs.image }}-${{ env.PLATFORM_PAIR }}
+          cache-to: ${{ inputs.push && format('type=gha,mode=max,scope={0}-{1}', inputs.image, env.PLATFORM_PAIR) || '' }}
+
+      - if: inputs.push
+        name: Export digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/digests"
+          touch "${RUNNER_TEMP}/digests/${DIGEST#sha256:}"
+
+      - if: inputs.push
+        uses: actions/upload-artifact@v7
+        with:
+          name: digests-${{ inputs.image }}-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    if: inputs.push
+    needs: [meta, build]
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    outputs:
+      digest: ${{ steps.inspect.outputs.digest }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-${{ inputs.image }}-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create manifest list
+        working-directory: ${{ runner.temp }}/digests
+        env:
+          IMAGE: ${{ needs.meta.outputs.image }}
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2046
+          docker buildx imagetools create -t "${IMAGE}:${VERSION}" $(printf "${IMAGE}@sha256:%s " *)
+
+      - id: inspect
+        env:
+          IMAGE: ${{ needs.meta.outputs.image }}
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          digest=$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{json .Manifest}}' | jq -r .digest)
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Pushed"
+            echo '```'
+            echo "${IMAGE}:${VERSION}"
+            echo "${IMAGE}@${digest}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

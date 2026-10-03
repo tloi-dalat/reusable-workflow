@@ -1,0 +1,99 @@
+# Lint a control-plane repo on every PR:
+#   1. every app directory under clusters/ must `kustomize build --enable-helm`
+#      exactly as ArgoCD will build it
+#   2. the rendered manifests must validate against the Kubernetes (and CRD)
+#      schemas — kubeconform, strict mode
+#   3. no plaintext secret-looking env values in any values.yaml
+#
+# Caller needs:  permissions: { contents: read }
+name: control-plane-lint
+on:
+  workflow_call:
+    inputs:
+      kubernetes-version:
+        description: Schema version to validate against (match the cluster)
+        type: string
+        default: 1.36.0
+      kustomize-version:
+        type: string
+        default: v5.8.2
+      kubeconform-version:
+        type: string
+        default: v0.8.0
+      helm-version:
+        type: string
+        default: v4.3.0
+      allow-plaintext-keys:
+        description: Space-separated env keys that look secret but aren't (e.g. OAuth client IDs)
+        type: string
+        default: SOCIAL__GOOGLE_KEY
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: azure/setup-helm@v5
+        with:
+          version: ${{ inputs.helm-version }}
+
+      - name: Install kustomize and kubeconform
+        env:
+          KUSTOMIZE_VERSION: ${{ inputs.kustomize-version }}
+          KUBECONFORM_VERSION: ${{ inputs.kubeconform-version }}
+        run: |
+          set -euo pipefail
+          # `go install` verifies modules against the Go checksum database.
+          go install "sigs.k8s.io/kustomize/kustomize/v5@${KUSTOMIZE_VERSION}"
+          go install "github.com/yannh/kubeconform/cmd/kubeconform@${KUBECONFORM_VERSION}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: No plaintext secrets in values.yaml
+        env:
+          ALLOW: ${{ inputs.allow-plaintext-keys }}
+        run: |
+          set -euo pipefail
+          bad=0
+          while IFS= read -r f; do
+            # env entries whose NAME looks secret and whose value is a literal
+            # string (not a valueFrom reference)
+            while IFS= read -r key; do
+              [[ -z "$key" ]] && continue
+              if [[ " $ALLOW " == *" $key "* ]]; then continue; fi
+              echo "::error file=${f}::env ${key} looks like a secret but has a literal value — use the SealedSecret (envFrom / secretKeyRef)"
+              bad=1
+            done < <(yq '(.env // {}) | to_entries | .[]
+                         | select(.key | test("(PASSWORD|SECRET|TOKEN|_KEY)$"))
+                         | select(.value | type == "!!str")
+                         | .key' "$f")
+          done < <(find clusters -name values.yaml)
+          exit $bad
+
+      - name: Build and validate every app
+        env:
+          K8S_VERSION: ${{ inputs.kubernetes-version }}
+        run: |
+          set -euo pipefail
+          crds='https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+          failed=0
+          while IFS= read -r k; do
+            dir=$(dirname "$k")
+            echo "::group::${dir}"
+            if kustomize build --enable-helm "$dir" > /tmp/out.yaml; then
+              kubeconform -strict -summary -kubernetes-version "$K8S_VERSION" \
+                -schema-location default -schema-location "$crds" /tmp/out.yaml || failed=1
+            else
+              echo "::error::kustomize build failed: ${dir}"; failed=1
+            fi
+            echo "::endgroup::"
+          done < <(find clusters -name kustomization.yaml | sort)
+          # Standalone manifests applied by hand at bootstrap (ApplicationSets).
+          find clusters -maxdepth 2 -name 'application-set.yaml' -print0 \
+            | xargs -0 -r kubeconform -strict -summary -kubernetes-version "$K8S_VERSION" \
+                -schema-location default -schema-location "$crds" || failed=1
+          exit $failed

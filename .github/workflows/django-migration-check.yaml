@@ -1,0 +1,98 @@
+# Review gate for Django schema changes on pull requests:
+#   - fails when models changed without a migration (makemigrations --check)
+#   - writes the SQL of every NEW migration file into the job summary, so a
+#     reviewer reads the actual ALTER TABLE instead of a Python file
+#
+# MySQL has no transactional DDL: a migration that fails halfway stays half
+# applied. Reading the SQL before merge is the cheapest protection there is.
+#
+# Caller needs:  permissions: { contents: read }
+name: django-migration-check
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        type: string
+        default: '3.12'
+      requirements:
+        description: Space-separated requirement files
+        type: string
+        default: requirements.txt
+      settings-file:
+        description: CI settings copied over settings-target before running
+        type: string
+        default: .ci.settings.py
+      settings-target:
+        type: string
+        default: dmoj/local_settings.py
+      mysql-image:
+        type: string
+        default: mysql:8.0
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    services:
+      mysql:
+        image: ${{ inputs.mysql-image }}
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: dmoj
+        ports:
+          - 13306:3306
+        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ inputs.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        env:
+          REQUIREMENTS: ${{ inputs.requirements }}
+        run: |
+          set -euo pipefail
+          pip install wheel
+          for r in $REQUIREMENTS; do pip install -r "$r"; done
+
+      - name: Install CI settings
+        env:
+          SRC: ${{ inputs.settings-file }}
+          DST: ${{ inputs.settings-target }}
+        run: cp "$SRC" "$DST"
+
+      - name: Models and migrations agree
+        run: python manage.py makemigrations --check --dry-run
+
+      - name: SQL of new migrations
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          mapfile -t added < <(git diff --diff-filter=A --name-only "origin/${BASE}...HEAD" -- '*/migrations/[0-9]*.py')
+          if [[ ${#added[@]} -eq 0 ]]; then
+            echo "No new migrations in this PR." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          {
+            echo "## SQL this PR will run on deploy"
+            echo "MySQL DDL is not transactional — a failure part-way leaves the schema half-changed."
+          } >> "$GITHUB_STEP_SUMMARY"
+          for f in "${added[@]}"; do
+            app=$(basename "$(dirname "$(dirname "$f")")")
+            name=$(basename "$f" .py)
+            {
+              echo "### ${app} / ${name}"
+              echo '```sql'
+              python manage.py sqlmigrate "$app" "$name"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          done

@@ -1,0 +1,64 @@
+# Ask <owner>/control-plane to deploy a version: sends a `sync-version`
+# repository_dispatch, which control-plane turns into a bot commit bumping
+# clusters/<environment>/<namespace>/<app>/values.yaml for each app.
+#
+# Caller needs the secret CONTROL_PLANE_TOKEN: a fine-grained PAT (or GitHub App
+# token) with "Contents: read and write" on <owner>/control-plane only.
+# CI never talks to the cluster; this commit is its only write.
+name: dispatch
+on:
+  workflow_call:
+    inputs:
+      apps:
+        description: Comma-separated app directories, e.g. site,bridge,celery
+        type: string
+        required: true
+      namespace:
+        type: string
+        required: true
+      environment:
+        description: dev | prd
+        type: string
+        required: true
+      version:
+        type: string
+        required: true
+      digest:
+        description: Optional manifest digest to pin alongside the tag (prd)
+        type: string
+        default: ''
+    secrets:
+      CONTROL_PLANE_TOKEN:
+        required: true
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Send sync-version
+        env:
+          GH_TOKEN: ${{ secrets.CONTROL_PLANE_TOKEN }}
+          TARGET: ${{ github.repository_owner }}/control-plane
+          APPS: ${{ inputs.apps }}
+          NAMESPACE: ${{ inputs.namespace }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          VERSION: ${{ inputs.version }}
+          DIGEST: ${{ inputs.digest }}
+          ACTOR: ${{ github.actor }}
+          SOURCE: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # Built with jq, never by string interpolation, so no input can
+          # break out of the JSON.
+          jq -n \
+            --arg apps "$APPS" --arg namespace "$NAMESPACE" --arg environment "$ENVIRONMENT" \
+            --arg version "$VERSION" --arg digest "$DIGEST" \
+            --arg actor "$ACTOR" --arg source "$SOURCE" --arg sha "$SHA" \
+            '{event_type: "sync-version",
+              client_payload: {apps: $apps, namespace: $namespace, environment: $environment,
+                               version: $version, digest: $digest,
+                               actor: $actor, source: $source, sha: $sha}}' \
+          | gh api "repos/${TARGET}/dispatches" --input -
+          echo "Requested ${ENVIRONMENT}/${NAMESPACE}/{${APPS}} → ${VERSION}" | tee -a "$GITHUB_STEP_SUMMARY"
