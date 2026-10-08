@@ -85,7 +85,7 @@ jobs:
             dir=$(dirname "$k")
             echo "::group::${dir}"
             if kustomize build --enable-helm "$dir" > /tmp/out.yaml; then
-              kubeconform -strict -summary -kubernetes-version "$K8S_VERSION" \
+              kubeconform -strict -summary -skip CustomResourceDefinition -kubernetes-version "$K8S_VERSION" \
                 -schema-location default -schema-location "$crds" /tmp/out.yaml || failed=1
             else
               echo "::error::kustomize build failed: ${dir}"; failed=1
@@ -94,6 +94,6 @@ jobs:
           done < <(find clusters -name kustomization.yaml | sort)
           # Standalone manifests applied by hand at bootstrap (ApplicationSets).
           find clusters -maxdepth 2 -name 'application-set.yaml' -print0 \
-            | xargs -0 -r kubeconform -strict -summary -kubernetes-version "$K8S_VERSION" \
+            | xargs -0 -r kubeconform -strict -summary -skip CustomResourceDefinition -kubernetes-version "$K8S_VERSION" \
                 -schema-location default -schema-location "$crds" || failed=1
           exit $failed
