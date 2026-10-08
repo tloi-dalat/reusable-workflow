@@ -38,7 +38,7 @@ jobs:
           # before it touches a path.
           [[ "$APPS"        =~ ^[a-z0-9-]+(,[a-z0-9-]+)*$ ]] || { echo "::error::bad apps: $APPS"; exit 1; }
           [[ "$NAMESPACE"   =~ ^[a-z0-9-]+$ ]]               || { echo "::error::bad namespace: $NAMESPACE"; exit 1; }
-          [[ "$ENVIRONMENT" =~ ^(dev|prd)$ ]]                || { echo "::error::bad environment: $ENVIRONMENT"; exit 1; }
+          [[ "$ENVIRONMENT" =~ ^(development|production)$ ]] || { echo "::error::bad environment: $ENVIRONMENT"; exit 1; }
           [[ "$VERSION"     =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || { echo "::error::bad version: $VERSION"; exit 1; }
           [[ -z "$DIGEST" || "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]  || { echo "::error::bad digest: $DIGEST"; exit 1; }
 
@@ -68,7 +68,7 @@ jobs:
             f="clusters/${ENVIRONMENT}/${NAMESPACE}/${app}/values.yaml"
             [[ -f "$f" ]] || { echo "::error::no such app: $f"; exit 1; }
             set_image_field "$f" tag "$VERSION"
-            [[ -z "$DIGEST" ]] || set_image_field "$f" digest "$DIGEST"   # prd files carry a `digest: ""` line
+            [[ -z "$DIGEST" ]] || set_image_field "$f" digest "$DIGEST"   # production files carry a `digest: ""` line
             echo "  $f → $VERSION"
           done
 

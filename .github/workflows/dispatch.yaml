@@ -17,14 +17,14 @@ on:
         type: string
         required: true
       environment:
-        description: dev | prd
+        description: development | production
         type: string
         required: true
       version:
         type: string
         required: true
       digest:
-        description: Optional manifest digest to pin alongside the tag (prd)
+        description: Optional manifest digest to pin alongside the tag (production)
         type: string
         default: ''
     secrets:
