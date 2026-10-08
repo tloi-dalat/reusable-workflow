@@ -29,11 +29,11 @@ CI never holds a cluster credential. Its only write is a git commit to control-p
 
 ```yaml
 jobs:
-  site:
+  core:
     permissions: { contents: read, packages: write }
     uses: tloi-dalat/reusable-workflow/.github/workflows/build-push.yaml@main
     with:
-      image: oj-site                     # → ghcr.io/tloi-dalat/oj-site
+      image: oj-core                     # → ghcr.io/tloi-dalat/oj-core
       dockerfile: Dockerfile
       context: .
       platforms: '["linux/amd64"]'       # JSON list; arm64 runs on ubuntu-24.04-arm
@@ -49,13 +49,13 @@ Outputs: `version` (the tag), `image`, `digest` (empty when not pushed).
 
 ```yaml
   deploy-dev:
-    needs: [site]
+    needs: [core]
     uses: tloi-dalat/reusable-workflow/.github/workflows/dispatch.yaml@main
     with:
-      apps: django,wsevent                # directories under clusters/<env>/<namespace>/
+      apps: core,wsevent                  # directories under clusters/<env>/<namespace>/
       namespace: online-judge
-      environment: dev                    # dev | prd
-      version: ${{ needs.site.outputs.version }}
+      environment: development            # development | production
+      version: ${{ needs.core.outputs.version }}
     secrets:
       CONTROL_PLANE_TOKEN: ${{ secrets.CONTROL_PLANE_TOKEN }}
 ```
