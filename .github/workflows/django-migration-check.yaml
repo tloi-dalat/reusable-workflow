@@ -82,17 +82,36 @@ jobs:
             echo "No new migrations in this PR." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
+
+          # sqlmigrate introspects existing tables for some operations (e.g. RemoveField on
+          # MySQL), so the database must first be at the base branch's schema: hide the new
+          # migration files, migrate, then put them back.
+          held=$(mktemp -d)
+          for f in "${added[@]}"; do
+            mkdir -p "$held/$(dirname "$f")"
+            mv "$f" "$held/$f"
+          done
+          python manage.py migrate --noinput > /dev/null
+          for f in "${added[@]}"; do
+            mv "$held/$f" "$f"
+          done
+
+          # Only the new migrations are unapplied now; list them in dependency order.
+          mapfile -t pending < <(python manage.py showmigrations --plan | awk '$1 == "[" && $2 == "]" { print $3 }')
+
           {
             echo "## SQL this PR will run on deploy"
             echo "MySQL DDL is not transactional — a failure part-way leaves the schema half-changed."
           } >> "$GITHUB_STEP_SUMMARY"
-          for f in "${added[@]}"; do
-            app=$(basename "$(dirname "$(dirname "$f")")")
-            name=$(basename "$f" .py)
+          for m in "${pending[@]}"; do
+            app=${m%%.*}
+            name=${m#*.}
             {
               echo "### ${app} / ${name}"
               echo '```sql'
               python manage.py sqlmigrate "$app" "$name"
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
+            # Apply it so the next migration's SQL is generated against the right schema.
+            python manage.py migrate "$app" "$name" --noinput > /dev/null
           done
