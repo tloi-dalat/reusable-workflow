@@ -3,7 +3,9 @@
 #      and the catalogs compile with the same commands the build runs
 #   2. the .po files are UP TO DATE: re-running makemessages adds no new strings
 #      and leaves none behind (line references are ignored — they move with
-#      every code edit)
+#      every code edit). A locale dir that another command generates (e.g. one
+#      holding translations of a dependency's strings) sets `regenerate` to run
+#      that command instead.
 #   3. every target locale is COMPLETE: no untranslated, no fuzzy and (unless
 #      allowed) no obsolete entries. The source locale is only checked for 1–2.
 #   4. (opt-in, template-globs) every _('...') literal in the templates was
@@ -50,6 +52,12 @@ on:
         default: |
           -e py,html,txt
           -d djangojs
+      regenerate:
+        description: >-
+          Commands (one per line) that regenerate the catalogs instead of makemessages, for a locale-dir
+          that makemessages doesn't manage
+        type: string
+        default: ''
       allow-obsolete:
         description: Tolerate obsolete (#~) entries in target locales
         type: boolean
@@ -128,15 +136,24 @@ jobs:
             echo "::endgroup::"
           done <<< "$COMMANDS"
 
-      - name: Regenerate with makemessages
+      - name: Regenerate the catalogs
         env:
           LOCALE_DIR: ${{ inputs.locale-dir }}
           ARGS: ${{ inputs.makemessages }}
+          COMMANDS: ${{ inputs.regenerate }}
         run: |
           set -euo pipefail
-          # Keep what the PR committed; makemessages rewrites the files in place.
           mkdir -p "$RUNNER_TEMP/committed"
           cp -a "$LOCALE_DIR/." "$RUNNER_TEMP/committed/"
+          if [[ -n "${COMMANDS// }" ]]; then
+            while IFS= read -r cmd; do
+              [[ -z "${cmd// }" ]] && continue
+              echo "::group::${cmd}"
+              bash -c "$cmd"
+              echo "::endgroup::"
+            done <<< "$COMMANDS"
+            exit 0
+          fi
           while IFS= read -r line; do
             [[ -z "${line// }" ]] && continue
             echo "::group::makemessages --all ${line}"
@@ -152,6 +169,7 @@ jobs:
           ALLOW_OBSOLETE: ${{ inputs.allow-obsolete }}
           TEMPLATE_GLOBS: ${{ inputs.template-globs }}
           FIX_ARGS: ${{ inputs.makemessages }}
+          FIX_COMMANDS: ${{ inputs.regenerate }}
         run: |
           python - <<'PY'
           import ast, glob, os, pathlib, re, polib
@@ -259,8 +277,9 @@ jobs:
                       summary.write(f'- `{path}:{line}` — "{short(msgid)}"\n')
           if failed:
               flags = '--all' if allow_obsolete else '--all --no-obsolete'
-              cmds = '\n'.join(f'python manage.py makemessages {flags} {l.strip()}'
-                               for l in os.environ['FIX_ARGS'].splitlines() if l.strip())
+              cmds = '\n'.join(l.strip() for l in os.environ['FIX_COMMANDS'].splitlines() if l.strip())
+              cmds = cmds or '\n'.join(f'python manage.py makemessages {flags} {l.strip()}'
+                                       for l in os.environ['FIX_ARGS'].splitlines() if l.strip())
               summary.write(
                   '\n**To fix:** regenerate, then translate every empty or `#, fuzzy` entry '
                   'in the target locales and remove the fuzzy flags:\n\n'
