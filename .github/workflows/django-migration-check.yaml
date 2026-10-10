@@ -26,8 +26,9 @@ on:
         type: string
         default: dmoj/local_settings.py
       mysql-image:
+        description: MySQL or MariaDB image; match production (Django 6 needs MySQL 8.4+ / MariaDB 10.6+)
         type: string
-        default: mysql:8.0
+        default: mysql:8.4
 
 jobs:
   check:
@@ -43,7 +44,7 @@ jobs:
           MYSQL_DATABASE: dmoj
         ports:
           - 13306:3306
-        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=5
+        options: --health-cmd="mysqladmin ping || mariadb-admin ping" --health-interval=10s --health-timeout=5s --health-retries=5
     steps:
       - uses: actions/checkout@v7
         with:
