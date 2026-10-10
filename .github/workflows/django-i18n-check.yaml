@@ -62,6 +62,7 @@ on:
 
 jobs:
   check:
+    name: i18n
     runs-on: ubuntu-latest
     permissions:
       contents: read
