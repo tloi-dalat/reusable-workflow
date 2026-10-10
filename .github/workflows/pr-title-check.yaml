@@ -1,0 +1,50 @@
+# Check that the pull request title follows Conventional Commits,
+# `type(scope): summary` (scope and `!` optional), since a squash merge turns the
+# title into the commit message on main.
+#
+# The caller should also trigger on `edited`, so fixing the title re-runs the check:
+#   on: { pull_request: { types: [opened, edited, synchronize, reopened] } }
+#
+# Caller needs:  permissions: {}
+name: pr-title-check
+on:
+  workflow_call:
+    inputs:
+      types:
+        description: Space-separated allowed types
+        type: string
+        default: feat fix perf refactor revert docs style test build ci chore i18n
+
+jobs:
+  check:
+    name: title
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Conventional Commits title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          TYPES: ${{ inputs.types }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$TITLE" ]]; then
+            echo "Not a pull request; nothing to check."
+            exit 0
+          fi
+          read -ra types <<< "$TYPES"
+          alternation=$(IFS='|'; echo "${types[*]}")
+          pattern="^(${alternation})(\([^()]+\))?!?: [^[:space:]]"
+          if [[ "$TITLE" =~ $pattern ]]; then
+            echo "OK: $TITLE"
+            exit 0
+          fi
+          echo "::error::PR title must be 'type(scope): summary' with type one of: ${TYPES}. Got: ${TITLE}"
+          {
+            echo "## PR title"
+            echo
+            echo "❌ \`${TITLE}\`"
+            echo
+            echo "Expected \`type(scope): summary\` (scope optional), e.g. \`fix(ranking): hide results before unfreeze\`."
+            echo "Allowed types: \`${TYPES}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1

@@ -1,0 +1,66 @@
+# Build the repo's container images on pull requests, without pushing, so anything
+# that breaks `docker build` (asset build, collectstatic, compilemessages, a bad
+# requirement, a missing file) fails the PR instead of the build on main.
+#
+# Reads the layer cache that build-push.yaml writes on main (same scope names), so
+# unchanged layers are not rebuilt. Writes no cache and pushes nothing.
+#
+# Require only the final 'docker' job; the per-image jobs report as 'build <image>'.
+#
+# Caller needs:  permissions: { contents: read }
+name: docker-build-check
+on:
+  workflow_call:
+    inputs:
+      images:
+        description: >-
+          JSON list of {"image": ..., "dockerfile": ..., "context": ...}; "image" is the
+          build-push.yaml image name (used for the cache scope), "context" defaults to "."
+        type: string
+        required: true
+      submodules:
+        description: Passed to actions/checkout (false | true | recursive)
+        type: string
+        default: 'false'
+
+jobs:
+  build:
+    name: build ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.images) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: ${{ inputs.submodules }}
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context || '.' }}
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          outputs: type=cacheonly
+          cache-from: type=gha,scope=${{ matrix.image }}-linux-amd64
+
+  check:
+    name: docker
+    needs: build
+    if: always()
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - env:
+          RESULT: ${{ needs.build.result }}
+        run: |
+          if [[ "$RESULT" != success ]]; then
+            echo "::error::image build result: $RESULT"
+            exit 1
+          fi
+          echo "All images build."

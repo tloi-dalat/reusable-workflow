@@ -1,0 +1,111 @@
+# Compile every Django / Jinja template on pull requests.
+#
+# Tests only render a handful of pages, so a syntax error in any other template
+# ships unnoticed. This loads each one through Django's own template loader (the
+# engines, extensions and globals the site uses), which parses and compiles it
+# without rendering. No database is needed.
+#
+# Caller needs:  permissions: { contents: read }
+name: django-template-check
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        type: string
+        default: '3.12'
+      requirements:
+        description: Space-separated requirement files
+        type: string
+        default: requirements.txt
+      settings-file:
+        description: Settings copied over settings-target so manage.py can start (empty = none)
+        type: string
+        default: ''
+      settings-target:
+        type: string
+        default: ''
+      template-dirs:
+        description: Space-separated directories; template names are relative to them
+        type: string
+        default: templates
+      extensions:
+        description: Space-separated file extensions to compile
+        type: string
+        default: html txt xml js
+
+jobs:
+  check:
+    name: templates
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ inputs.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        env:
+          REQUIREMENTS: ${{ inputs.requirements }}
+        run: |
+          set -euo pipefail
+          pip install wheel
+          for r in $REQUIREMENTS; do pip install -r "$r"; done
+
+      - name: Install CI settings
+        if: inputs.settings-file != ''
+        env:
+          SRC: ${{ inputs.settings-file }}
+          DST: ${{ inputs.settings-target }}
+        run: cp "$SRC" "$DST"
+
+      - name: Every template compiles
+        env:
+          TEMPLATE_DIRS: ${{ inputs.template-dirs }}
+          EXTENSIONS: ${{ inputs.extensions }}
+        run: |
+          python manage.py shell <<'PY'
+          import os, pathlib
+          from django.template.loader import get_template
+
+          def esc(text):  # workflow-command escaping
+              return str(text).replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+
+          exts = tuple('.' + e.lstrip('.') for e in os.environ['EXTENSIONS'].split())
+          checked, failures = 0, []
+          for directory in os.environ['TEMPLATE_DIRS'].split():
+              root = pathlib.Path(directory)
+              for path in sorted(p for p in root.rglob('*') if p.is_file() and p.suffix in exts):
+                  checked += 1
+                  name = path.relative_to(root).as_posix()
+                  try:
+                      get_template(name)
+                  except Exception as e:  # syntax errors, unknown tags/filters, missing parents...
+                      # Django wraps the engine's own error; that one has the real message, line
+                      # and template (which can be a parent or an include, not this file).
+                      cause = e.__cause__ or e.__context__ or e
+                      debug = getattr(e, 'template_debug', None) or {}
+                      line = getattr(cause, 'lineno', None) or debug.get('line') or 1
+                      message = getattr(cause, 'message', None) or str(cause)
+                      where = path
+                      if getattr(cause, 'name', None) and cause.name != name and (root / cause.name).is_file():
+                          where = root / cause.name
+                          message = f'{message} (while loading {name})'
+                      message = f'{type(cause).__name__}: {message}'.splitlines()[0]
+                      failures.append((where.as_posix(), line, message))
+                      print(f'::error file={where.as_posix()},line={line}::{esc(message)}')
+
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+              summary.write('## Template check\n\n')
+              summary.write(f'{checked} templates compiled, {len(failures)} failed '
+                            f'{"✅" if not failures else "❌"}\n')
+              for path, line, message in failures:
+                  summary.write(f'- `{path}:{line}` {message}\n')
+          print(f'{checked} templates compiled, {len(failures)} failed')
+          raise SystemExit(1 if failures or not checked else 0)
+          PY

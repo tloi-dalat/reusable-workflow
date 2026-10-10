@@ -24,6 +24,11 @@ CI never holds a cluster credential. Its only write is a git commit to control-p
 | `control-plane-lint.yaml` | control-plane | `kustomize build --enable-helm` every app, `kubeconform` the output, reject plaintext secrets |
 | `django-migration-check.yaml` | Django app repos | Fail on missing migrations; put the SQL of new migrations in the PR summary |
 | `django-i18n-check.yaml` | Django app repos | Fail when .po files are invalid or don't compile, out of date with the code, or have untranslated / fuzzy / obsolete entries; optionally (`template-globs`) when a template `_('...')` is one makemessages cannot extract |
+| `django-template-check.yaml` | Django app repos | Compile every Django / Jinja template (no database), annotating syntax errors with file and line |
+| `docker-build-check.yaml` | Repos with images | Build the images on pull requests without pushing, reading `build-push.yaml`'s cache; require its `docker` job |
+| `python-audit.yaml` | Python repos | pip-audit the requirement files (resolved from scratch); run on PRs and weekly; `ignore` takes advisory IDs with reasons |
+| `pr-title-check.yaml` | Any repo | Pull request title must be Conventional Commits (`type(scope): summary`); caller must also trigger on `edited` |
+| `workflow-lint.yaml` | Any repo | actionlint (+ shellcheck) on the calling repo's own workflows |
 | `lint.yaml` | this repo | actionlint (+ shellcheck) on these workflows |
 
 ### build-push.yaml

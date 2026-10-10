@@ -1,0 +1,32 @@
+# Lint the calling repo's own GitHub workflows with actionlint, which also runs
+# shellcheck on every run: block. Catches broken expressions, wrong inputs to local
+# reusable workflows, bad `needs`, typos and shell bugs before they break CI on main.
+# (Inputs to remote reusable workflows such as this repo's are not resolved.)
+#
+# Caller needs:  permissions: { contents: read }
+name: workflow-lint
+on:
+  workflow_call:
+    inputs:
+      actionlint-version:
+        type: string
+        default: v1.7.12
+
+jobs:
+  check:
+    name: workflows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: actionlint
+        env:
+          VERSION: ${{ inputs.actionlint-version }}
+        run: |
+          set -euo pipefail
+          go install "github.com/rhysd/actionlint/cmd/actionlint@${VERSION}"
+          "$(go env GOPATH)/bin/actionlint" -color

@@ -1,0 +1,96 @@
+# Audit Python dependencies for known vulnerabilities with pip-audit (PyPI advisory
+# database), resolving the requirement files from scratch the way a fresh install
+# does. Run it on pull requests and on a schedule: new advisories appear without
+# any code change, especially with unpinned requirements.
+#
+# Each finding is annotated and listed in the job summary with its fix versions.
+# Accepted risks go in `ignore` (one advisory ID per line, `# reason` allowed).
+#
+# Caller needs:  permissions: { contents: read }
+name: python-audit
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        type: string
+        default: '3.12'
+      requirements:
+        description: Space-separated requirement files
+        type: string
+        default: requirements.txt
+      ignore:
+        description: Advisory IDs to ignore, one per line; text after '#' is a comment
+        type: string
+        default: ''
+
+jobs:
+  check:
+    name: dependencies
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ inputs.python-version }}
+          cache: pip
+
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      - name: Audit
+        env:
+          REQUIREMENTS: ${{ inputs.requirements }}
+          IGNORE: ${{ inputs.ignore }}
+        run: |
+          set -uo pipefail
+          args=()
+          for r in $REQUIREMENTS; do args+=(--requirement "$r"); done
+          while IFS= read -r line; do
+            id="${line%%#*}"
+            id="${id//[[:space:]]/}"
+            if [[ -n "$id" ]]; then args+=(--ignore-vuln "$id"); fi
+          done <<< "$IGNORE"
+
+          report="$RUNNER_TEMP/audit.json"
+          # Exit 1 just means "vulnerabilities found"; the report below decides the result.
+          status=0
+          pip-audit "${args[@]}" --progress-spinner off --format json --output "$report" || status=$?
+          if [[ ! -s "$report" ]]; then
+            echo "::error::pip-audit did not produce a report (exit $status)"
+            exit 1
+          fi
+
+          python - "$report" <<'PY'
+          import json, os, sys
+
+          def esc(text):  # workflow-command escaping
+              return str(text).replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+
+          data = json.load(open(sys.argv[1]))
+          found = [(d['name'], d['version'], v) for d in data['dependencies'] for v in d.get('vulns', [])]
+          skipped = [d for d in data['dependencies'] if d.get('skip_reason')]
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+              summary.write('## Dependency audit\n\n')
+              summary.write(f"{len(data['dependencies'])} packages audited, {len(found)} known "
+                            f"vulnerabilities {'✅' if not found else '❌'}\n\n")
+              if found:
+                  summary.write('| Package | Version | Advisory | Fixed in |\n|---|---|---|---|\n')
+              for name, version, v in found:
+                  advisory = v['id']
+                  fixes = ', '.join(v['fix_versions']) or 'no fix yet'
+                  url = f'https://osv.dev/vulnerability/{advisory}'
+                  summary.write(f'| {name} | {version} | [{advisory}]({url}) | {fixes} |\n')
+                  message = f'{name} {version}: {advisory} (fixed in: {fixes}) {url}'
+                  print(f'::error::{esc(message)}')
+              for d in skipped:
+                  summary.write(f"\nNot audited: {d['name']} ({d['skip_reason']})\n")
+              if found:
+                  summary.write('\nUpgrade the package, or add the advisory ID to `ignore` with a reason.\n')
+          print(f"{len(data['dependencies'])} packages audited, {len(found)} known vulnerabilities")
+          raise SystemExit(1 if found else 0)
+          PY
