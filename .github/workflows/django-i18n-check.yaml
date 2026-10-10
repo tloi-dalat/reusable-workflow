@@ -1,5 +1,6 @@
 # Translation gate for Django (gettext) repos, on pull requests:
 #   1. every .po file is valid (msgfmt --check: header, python-format, plurals)
+#      and the catalogs compile with the same commands the build runs
 #   2. the .po files are UP TO DATE: re-running makemessages adds no new strings
 #      and leaves none behind (line references are ignored — they move with
 #      every code edit)
@@ -53,6 +54,12 @@ on:
         description: Tolerate obsolete (#~) entries in target locales
         type: boolean
         default: false
+      compile:
+        description: >-
+          Commands (one per line) that compile the catalogs the way the build does, e.g.
+          compilemessages then compilejsi18n (empty = skip)
+        type: string
+        default: python manage.py compilemessages
       template-globs:
         description: >-
           Space-separated globs of Jinja templates whose _('...') literals must all be in
@@ -107,6 +114,19 @@ jobs:
             echo "${f}: ${out}"
           done < <(find "$LOCALE_DIR" -name '*.po' -print0 | sort -z)
           exit $fail
+
+      - name: Catalogs compile
+        if: inputs.compile != ''
+        env:
+          COMMANDS: ${{ inputs.compile }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r cmd; do
+            [[ -z "${cmd// }" ]] && continue
+            echo "::group::${cmd}"
+            bash -c "$cmd"
+            echo "::endgroup::"
+          done <<< "$COMMANDS"
 
       - name: Regenerate with makemessages
         env:
