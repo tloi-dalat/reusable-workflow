@@ -23,6 +23,7 @@ CI never holds a cluster credential. Its only write is a git commit to control-p
 | `control-plane-repo-dispatch.yaml` | control-plane | Receive `sync-version`, validate it, bump tags, commit, push (serialised, with retry) |
 | `control-plane-lint.yaml` | control-plane | `kustomize build --enable-helm` every app, `kubeconform` the output, reject plaintext secrets |
 | `django-migration-check.yaml` | Django app repos | Fail on missing migrations; put the SQL of new migrations in the PR summary |
+| `django-i18n-check.yaml` | Django app repos | Fail when .po files are invalid, out of date with the code, or have untranslated / fuzzy / obsolete entries; optionally (`template-globs`) when a template `_('...')` is one makemessages cannot extract |
 | `lint.yaml` | this repo | actionlint (+ shellcheck) on these workflows |
 
 ### build-push.yaml

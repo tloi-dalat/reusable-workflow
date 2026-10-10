@@ -1,0 +1,249 @@
+# Translation gate for Django (gettext) repos, on pull requests:
+#   1. every .po file is valid (msgfmt --check: header, python-format, plurals)
+#   2. the .po files are UP TO DATE: re-running makemessages adds no new strings
+#      and leaves none behind (line references are ignored — they move with
+#      every code edit)
+#   3. every target locale is COMPLETE: no untranslated, no fuzzy and (unless
+#      allowed) no obsolete entries. The source locale is only checked for 1–2.
+#   4. (opt-in, template-globs) every _('...') literal in the templates was
+#      actually extracted: django_jinja's makemessages silently skips some
+#      (multi-line {{ }}, _() in Jinja filter arguments, a 2nd _() in one
+#      expression), so check 2 alone cannot see them.
+#
+# Failures are annotated on the .po line and listed in the job summary, with
+# the command that fixes them.
+#
+# Caller needs:  permissions: { contents: read }
+name: django-i18n-check
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        type: string
+        default: '3.12'
+      requirements:
+        description: Space-separated requirement files
+        type: string
+        default: requirements.txt
+      settings-file:
+        description: Settings copied over settings-target so manage.py can start (empty = none)
+        type: string
+        default: ''
+      settings-target:
+        type: string
+        default: ''
+      submodules:
+        description: Passed to actions/checkout (templates may live in submodules)
+        type: string
+        default: 'false'
+      locale-dir:
+        type: string
+        default: locale
+      source-locale:
+        description: Locale holding the source strings (msgstr left empty on purpose)
+        type: string
+        default: en
+      makemessages:
+        description: One makemessages argument set per line; each runs with --all
+        type: string
+        default: |
+          -e py,html,txt
+          -d djangojs
+      allow-obsolete:
+        description: Tolerate obsolete (#~) entries in target locales
+        type: boolean
+        default: false
+      template-globs:
+        description: >-
+          Space-separated globs of Jinja templates whose _('...') literals must all be in
+          the source locale's django.po (empty = skip check 4)
+        type: string
+        default: ''
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          submodules: ${{ inputs.submodules }}
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ inputs.python-version }}
+          cache: pip
+
+      - name: Install gettext and dependencies
+        env:
+          REQUIREMENTS: ${{ inputs.requirements }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends gettext
+          pip install wheel polib
+          for r in $REQUIREMENTS; do pip install -r "$r"; done
+
+      - name: Install CI settings
+        if: inputs.settings-file != ''
+        env:
+          SRC: ${{ inputs.settings-file }}
+          DST: ${{ inputs.settings-target }}
+        run: cp "$SRC" "$DST"
+
+      - name: .po files are valid
+        env:
+          LOCALE_DIR: ${{ inputs.locale-dir }}
+        run: |
+          set -uo pipefail
+          fail=0
+          while IFS= read -r -d '' f; do
+            if ! out=$(msgfmt --check --statistics -o /dev/null "$f" 2>&1); then
+              echo "::error file=${f}::msgfmt --check failed"; fail=1
+            fi
+            echo "${f}: ${out}"
+          done < <(find "$LOCALE_DIR" -name '*.po' -print0 | sort -z)
+          exit $fail
+
+      - name: Regenerate with makemessages
+        env:
+          LOCALE_DIR: ${{ inputs.locale-dir }}
+          ARGS: ${{ inputs.makemessages }}
+        run: |
+          set -euo pipefail
+          # Keep what the PR committed; makemessages rewrites the files in place.
+          mkdir -p "$RUNNER_TEMP/committed"
+          cp -a "$LOCALE_DIR/." "$RUNNER_TEMP/committed/"
+          while IFS= read -r line; do
+            [[ -z "${line// }" ]] && continue
+            echo "::group::makemessages --all ${line}"
+            # shellcheck disable=SC2086  # one line = several arguments
+            python manage.py makemessages --all ${line}
+            echo "::endgroup::"
+          done <<< "$ARGS"
+
+      - name: Up to date and complete
+        env:
+          LOCALE_DIR: ${{ inputs.locale-dir }}
+          SOURCE_LOCALE: ${{ inputs.source-locale }}
+          ALLOW_OBSOLETE: ${{ inputs.allow-obsolete }}
+          TEMPLATE_GLOBS: ${{ inputs.template-globs }}
+          FIX_ARGS: ${{ inputs.makemessages }}
+        run: |
+          python - <<'PY'
+          import ast, glob, os, pathlib, re, polib
+
+          locale_dir = pathlib.Path(os.environ['LOCALE_DIR'])
+          committed_dir = pathlib.Path(os.environ['RUNNER_TEMP']) / 'committed'
+          source = os.environ['SOURCE_LOCALE']
+          allow_obsolete = os.environ['ALLOW_OBSOLETE'] == 'true'
+          summary = open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8')
+          MAX_ANNOTATIONS = 30   # per file and problem; the summary has the counts
+
+          def key(e):
+              return (e.msgctxt, e.msgid, e.msgid_plural)
+
+          def short(text, n=80):
+              text = text.replace('\n', '\\n')
+              return text if len(text) <= n else text[:n - 1] + '…'
+
+          def annotate(path, entries, problem):
+              for e in entries[:MAX_ANNOTATIONS]:
+                  print(f'::error file={path},line={e.linenum}::{problem}: "{short(e.msgid)}"')
+              if len(entries) > MAX_ANNOTATIONS:
+                  print(f'::error file={path}::{problem}: {len(entries) - MAX_ANNOTATIONS} more not shown')
+
+          failed = False
+          rows = []
+          for po_path in sorted(locale_dir.glob('*/LC_MESSAGES/*.po')):
+              rel = po_path.relative_to(locale_dir)
+              locale = rel.parts[0]
+              shown = f'{locale_dir}/{rel}'
+              old_path = committed_dir / rel
+              if not old_path.exists():
+                  print(f'::error file={shown}::makemessages created this file; commit it')
+                  failed = True
+                  continue
+
+              committed = polib.pofile(str(old_path))
+              generated = polib.pofile(str(po_path))
+              have = {key(e) for e in committed if not e.obsolete}
+              want = {key(e) for e in generated if not e.obsolete}
+              missing = sorted(want - have, key=str)      # in the code, not in the .po
+              stale = sorted(have - want, key=str)        # in the .po, gone from the code
+              for k in missing[:MAX_ANNOTATIONS]:
+                  print(f'::error file={shown}::not extracted yet: "{short(k[1])}"')
+              stale_entries = [e for e in committed if not e.obsolete and key(e) in set(stale)]
+              annotate(shown, stale_entries, 'no longer in the code')
+
+              untranslated = fuzzy = obsolete = []
+              if locale != source:
+                  fuzzy = [e for e in committed if not e.obsolete and e.fuzzy]
+                  untranslated = [e for e in committed if not e.obsolete and not e.fuzzy and not e.translated()]
+                  obsolete = [] if allow_obsolete else [e for e in committed if e.obsolete]
+                  annotate(shown, fuzzy, 'fuzzy (check the translation, then drop the "fuzzy" flag)')
+                  annotate(shown, untranslated, 'untranslated')
+                  for e in obsolete[:MAX_ANNOTATIONS]:
+                      print(f'::error file={shown},line={e.linenum}::obsolete entry (#~): "{short(e.msgid)}"')
+
+              problems = len(missing) + len(stale) + len(fuzzy) + len(untranslated) + len(obsolete)
+              failed |= problems > 0
+              total = len([e for e in committed if not e.obsolete])
+              rows.append((shown, 'source' if locale == source else 'target', total,
+                           len(missing), len(stale), len(untranslated), len(fuzzy), len(obsolete),
+                           '✅' if problems == 0 else '❌'))
+
+          # Check 4: _('...') literals that makemessages never extracted.
+          unseen = []
+          template_globs = os.environ['TEMPLATE_GLOBS'].split()
+          if template_globs:
+              source_po = locale_dir / source / 'LC_MESSAGES' / 'django.po'
+              extracted = {e.msgid for e in polib.pofile(str(source_po)) if not e.obsolete}
+              call = re.compile(r'''(?<![\w.])_\(\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')''')
+              comment = re.compile(r'\{#.*?#\}', re.S)
+              for pattern in template_globs:
+                  for path in sorted(glob.glob(pattern, recursive=True)):
+                      text = pathlib.Path(path).read_text(encoding='utf-8')
+                      # Blank out {# comments #} but keep their newlines, so line numbers stay right.
+                      text = comment.sub(lambda m: re.sub(r'[^\n]', ' ', m.group()), text)
+                      for m in call.finditer(text):
+                          try:
+                              msgid = ast.literal_eval(m.group(1))
+                          except (SyntaxError, ValueError):
+                              msgid = m.group(1)[1:-1]
+                          if msgid not in extracted:
+                              unseen.append((path, text.count('\n', 0, m.start()) + 1, msgid))
+              for path, line, msgid in unseen[:MAX_ANNOTATIONS]:
+                  print(f'::error file={path},line={line}::makemessages does not extract this string: "{short(msgid)}"')
+              if len(unseen) > MAX_ANNOTATIONS:
+                  print(f'::error::{len(unseen) - MAX_ANNOTATIONS} more template strings not extracted')
+              failed |= bool(unseen)
+
+          summary.write('## i18n check\n\n')
+          summary.write('| File | Role | Entries | Not extracted | Stale | Untranslated | Fuzzy | Obsolete | |\n')
+          summary.write('|---|---|---:|---:|---:|---:|---:|---:|---|\n')
+          for r in rows:
+              summary.write('| ' + ' | '.join(str(c) for c in r) + ' |\n')
+          if template_globs:
+              summary.write(f'\nTemplate strings makemessages does not extract: **{len(unseen)}**'
+                            f' {"✅" if not unseen else "❌"}\n')
+              if unseen:
+                  summary.write(
+                      '\nRewrite each so the `_()` call is extractable, then regenerate: keep the whole '
+                      '`{{ ... }}` on one line, start it with the `_()` call, or move the call into a tag, '
+                      'e.g. `{% set fmt = _("F j, Y") %}{{ value|date(fmt) }}`.\n\n')
+                  for path, line, msgid in unseen:
+                      summary.write(f'- `{path}:{line}` — "{short(msgid)}"\n')
+          if failed:
+              flags = '--all' if allow_obsolete else '--all --no-obsolete'
+              cmds = '\n'.join(f'python manage.py makemessages {flags} {l.strip()}'
+                               for l in os.environ['FIX_ARGS'].splitlines() if l.strip())
+              summary.write(
+                  '\n**To fix:** regenerate, then translate every empty or `#, fuzzy` entry '
+                  'in the target locales and remove the fuzzy flags:\n\n'
+                  f'```bash\n{cmds}\n```\n')
+          summary.close()
+          raise SystemExit(1 if failed else 0)
+          PY
