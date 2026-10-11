@@ -29,6 +29,7 @@ CI never holds a cluster credential. Its only write is a git commit to control-p
 | `python-audit.yaml` | Python repos | pip-audit the requirement files (resolved from scratch); run on PRs and weekly; `ignore` takes advisory IDs with reasons |
 | `pr-title-check.yaml` | Any repo | Pull request title must be Conventional Commits (`type(scope): summary`); caller must also trigger on `edited` |
 | `workflow-lint.yaml` | Any repo | actionlint (+ shellcheck) on the calling repo's own workflows |
+| `codeql.yaml` | Any repo | CodeQL code scanning (Python, JavaScript/TypeScript, Actions by default); results go to the repo's Security tab and PR alerts |
 | `lint.yaml` | this repo | actionlint (+ shellcheck) on these workflows |
 
 ### build-push.yaml
@@ -65,6 +66,35 @@ Outputs: `version` (the tag), `image`, `digest` (empty when not pushed).
     secrets:
       CONTROL_PLANE_TOKEN: ${{ secrets.CONTROL_PLANE_TOKEN }}
 ```
+
+### codeql.yaml
+
+Call it from its own workflow, on pull requests **and** pushes to the default branch (pull request
+results are compared against the default branch's analysis), plus a schedule for new queries:
+
+```yaml
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: '43 2 * * 1'
+
+jobs:
+  codeql:
+    permissions: { contents: read, security-events: write, actions: read }
+    uses: tloi-dalat/reusable-workflow/.github/workflows/codeql.yaml@main
+    with:
+      languages: '["python", "javascript-typescript", "actions"]'   # the default
+      queries: security-and-quality         # default | security-extended (the default) | security-and-quality
+      paths-ignore: |                       # vendored code
+        resources/mathjax
+```
+
+Turn off CodeQL *default setup* (Settings → Code security) first, or the upload is rejected. The jobs
+pass even with alerts; to block merges, add a "Require code scanning results" rule to the branch
+ruleset rather than requiring the `analyze` jobs.
 
 ## One-time setup
 
