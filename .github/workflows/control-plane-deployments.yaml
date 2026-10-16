@@ -11,6 +11,10 @@
 # turn inactive, so the tab shows what is live and the history of what was.
 # Images from elsewhere (redis, nginx, cloudflared) are skipped.
 #
+# The Deployment's link comes from the app's own values.yaml, so every app and
+# environment has its own: `url:` if set (the chart ignores this key), otherwise
+# https://<env.SITE__DOMAIN> (our web apps' setting). Neither → no link.
+#
 # "success" means the change is on control-plane main; ArgoCD applies it within
 # a few minutes. Rollbacks (a revert) show up as a deployment of the older commit.
 #
@@ -35,10 +39,6 @@ on:
         description: Commit before the change; empty or unknown = the parent of `after`
         type: string
         default: ''
-      environment-urls:
-        description: 'JSON map environment → URL shown on the deployment, e.g. {"production": "https://oj.tloi.vn"}'
-        type: string
-        default: '{}'
     secrets:
       CI_APP_ID:
         required: true
@@ -73,20 +73,19 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           BEFORE: ${{ inputs.before }}
           AFTER: ${{ inputs.after }}
-          URLS: ${{ inputs.environment-urls }}
           SERVER: ${{ github.server_url }}
           OWNER: ${{ github.repository_owner }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           [[ "$AFTER" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::after must be a full SHA: $AFTER"; exit 1; }
-          jq -e 'type == "object"' <<< "$URLS" > /dev/null || { echo "::error::environment-urls must be a JSON object"; exit 1; }
           # New branch, force push or no input: compare with the parent.
           if [[ ! "$BEFORE" =~ ^[0-9a-f]{40}$ || "$BEFORE" =~ ^0+$ ]] || ! git cat-file -e "${BEFORE}^{commit}" 2> /dev/null; then
             BEFORE="${AFTER}^"
           fi
 
           declare -A groups=()   # "repo|revision|env|tag" → "ns/app, ns/app"
+          declare -A urls=()     # same key → link for the Deployment
           while IFS= read -r f; do
             [[ "$f" =~ ^clusters/([a-z0-9-]+)/([a-z0-9-]+)/([a-z0-9-]+)/values\.yaml$ ]] || continue
             env=${BASH_REMATCH[1]} ns=${BASH_REMATCH[2]} app=${BASH_REMATCH[3]}
@@ -107,6 +106,16 @@ jobs:
             [[ "${source,,}" == "${SERVER,,}/${OWNER,,}/"* && "$revision" =~ ^[0-9a-f]{40}$ ]] || continue
             key="${source#"$SERVER/"}|${revision}|${env}|${tag}"
             groups[$key]="${groups[$key]:+${groups[$key]}, }${ns}/${app}"
+
+            # Link: `url:`, else https://<SITE__DOMAIN>; first app of the group that has one.
+            if [[ -z "${urls[$key]:-}" ]]; then
+              url=$(yq '.url // ""' "$f")
+              domain=$(yq '.env.SITE__DOMAIN // ""' "$f")
+              if [[ -z "$url" && "$domain" =~ ^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$ ]]; then
+                url="https://${domain}"
+              fi
+              [[ "$url" =~ ^https?://[^[:space:]]+$ ]] && urls[$key]=$url
+            fi
           done < <(git diff --name-only "$BEFORE" "$AFTER" -- 'clusters/*/*/*/values.yaml')
 
           if (( ${#groups[@]} == 0 )); then
@@ -129,7 +138,7 @@ jobs:
               echo "::error::could not create a ${env} deployment in ${target} (is the CI App installed there, with Deployments: write?)"
               failed=1; continue
             fi
-            if ! jq -n --arg log "${SERVER}/${REPO}/commit/${AFTER}" --arg url "$(jq -r --arg e "$env" '.[$e] // ""' <<< "$URLS")" \
+            if ! jq -n --arg log "${SERVER}/${REPO}/commit/${AFTER}" --arg url "${urls[$key]:-}" \
                     '{state: "success", log_url: $log, auto_inactive: true,
                       description: "On control-plane main; ArgoCD applies it within minutes"}
                      + (if $url != "" then {environment_url: $url} else {} end)' \

@@ -187,8 +187,8 @@ ruleset rather than requiring the `analyze` jobs.
    (the cluster then pulls with no credentials, which is the simplest option for AGPL code), or keep them private and add an
    image pull secret in control-plane. `control-plane-deployments.yaml` reads the image labels
    anonymously, so it needs the packages public (or a registry login added to it).
-4. **`ENVIRONMENT_URLS`** (org or control-plane *variable*, optional): JSON shown as each
-   Deployment's link, e.g. `{"development": "https://oj.tloi.shop", "production": "https://oj.tloi.vn"}`.
+4. **Deployment links** need no setting: `control-plane-deployments.yaml` takes each app's link from its
+   `values.yaml` in control-plane (`url:`, else `https://<env.SITE__DOMAIN>`), per app and per environment.
 
 ## Conventions
 
