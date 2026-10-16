@@ -132,8 +132,7 @@ Deployment. Status `success` means "on control-plane main"; ArgoCD applies it wi
       namespace: online-judge
       environment: development            # development | production
       version: ${{ needs.core.outputs.version }}
-    secrets:
-      CONTROL_PLANE_TOKEN: ${{ secrets.CONTROL_PLANE_TOKEN }}
+    secrets: inherit                      # org secrets CI_APP_ID / CI_APP_PRIVATE_KEY
 ```
 
 ### codeql.yaml
@@ -170,17 +169,25 @@ ruleset rather than requiring the `analyze` jobs.
 1. **Keep this repo public.** The app repos that call it (`online-judge`, `judge-server`) are public,
    and GitHub doesn't let a public repo call workflows stored in a private one. The org-access
    setting only helps private callers. This repo holds no secrets.
-2. **`CONTROL_PLANE_TOKEN`**: an org secret, or a secret in each app repo. Use a fine-grained PAT
-   (or GitHub App) scoped to **`tloi-dalat/control-plane` only**, with **Contents: Read and write**.
-   That's all `repository_dispatch` needs.
+2. **The CI GitHub App** (the only credential CI uses; nothing expires, nothing per repo):
+   1. Org settings → Developer settings → GitHub Apps → **New GitHub App**, e.g. `tloi-ci`. Homepage: the
+      org URL. **Webhook: off.** Repository permissions: **Contents: Read and write**, **Deployments:
+      Read and write** (Metadata: Read is automatic). Where can it be installed: only this account.
+   2. **Install** it on `tloi-dalat`, **All repositories**, so new repos are covered with no change.
+   3. Generate a **private key**. Add two **org secrets** with access for **all repositories**:
+      `CI_APP_ID` (the App ID on its settings page) and `CI_APP_PRIVATE_KEY` (the whole `.pem`).
+      Delete the downloaded `.pem` afterwards.
+   4. Callers pass them with `secrets: inherit`. Each run mints a one-hour token holding only what that
+      job needs: `dispatch.yaml` gets Contents: write on `control-plane` only;
+      `control-plane-deployments.yaml` gets Deployments: write only.
+   5. There is no personal access token anywhere in CI. If a `CONTROL_PLANE_TOKEN` secret or PAT is still
+      around from before, delete it.
 3. **GHCR packages**: the first push creates `ghcr.io/tloi-dalat/<image>`, linked to the source repo
    through the `org.opencontainers.image.source` label. Either make each package **public**
    (the cluster then pulls with no credentials, which is the simplest option for AGPL code), or keep them private and add an
    image pull secret in control-plane. `control-plane-deployments.yaml` reads the image labels
    anonymously, so it needs the packages public (or a registry login added to it).
-4. **`DEPLOYMENTS_TOKEN`** (control-plane secret): a fine-grained PAT (or GitHub App) on the **app repos**
-   (`TLOJ`, `judge-server`) with **Deployments: Read and write**. It only creates Deployments there.
-5. **`ENVIRONMENT_URLS`** (control-plane repository *variable*, optional): JSON shown as each
+4. **`ENVIRONMENT_URLS`** (org or control-plane *variable*, optional): JSON shown as each
    Deployment's link, e.g. `{"development": "https://oj.tloi.shop", "production": "https://oj.tloi.vn"}`.
 
 ## Conventions

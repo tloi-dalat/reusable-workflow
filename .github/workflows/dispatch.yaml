@@ -2,8 +2,9 @@
 # repository_dispatch, which control-plane turns into a bot commit bumping
 # clusters/<environment>/<namespace>/<app>/values.yaml for each app.
 #
-# Caller needs the secret CONTROL_PLANE_TOKEN: a fine-grained PAT (or GitHub App
-# token) with "Contents: read and write" on <owner>/control-plane only.
+# Credentials: the org's CI GitHub App (org secrets CI_APP_ID, CI_APP_PRIVATE_KEY;
+# callers use `secrets: inherit`). Each run mints a one-hour token for
+# <owner>/control-plane only, with Contents: write — all repository_dispatch needs.
 # CI never talks to the cluster; this commit is its only write.
 name: dispatch
 on:
@@ -28,7 +29,9 @@ on:
         type: string
         default: ''
     secrets:
-      CONTROL_PLANE_TOKEN:
+      CI_APP_ID:
+        required: true
+      CI_APP_PRIVATE_KEY:
         required: true
 
 jobs:
@@ -36,9 +39,19 @@ jobs:
     runs-on: ubuntu-latest
     permissions: {}
     steps:
+      # Short-lived token from the org's CI GitHub App, scoped to this job's need.
+      - id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: control-plane
+          permission-contents: write
+
       - name: Send sync-version
         env:
-          GH_TOKEN: ${{ secrets.CONTROL_PLANE_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           TARGET: ${{ github.repository_owner }}/control-plane
           APPS: ${{ inputs.apps }}
           NAMESPACE: ${{ inputs.namespace }}

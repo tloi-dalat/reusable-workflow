@@ -19,8 +19,9 @@
 #   - on push to main (human merges: production releases, manual edits)
 #   - after control-plane-repo-dispatch's bot commit (development deploys)
 #
-# Secret DEPLOYMENTS_TOKEN: fine-grained PAT or GitHub App token with
-# "Deployments: read and write" on the app repos (TLOJ, judge-server).
+# Credentials: the org's CI GitHub App (org secrets CI_APP_ID, CI_APP_PRIVATE_KEY;
+# callers use `secrets: inherit`). Each run mints a one-hour token with
+# Deployments: write only.
 # Caller needs:  permissions: { contents: read }
 name: control-plane-deployments
 on:
@@ -39,7 +40,9 @@ on:
         type: string
         default: '{}'
     secrets:
-      DEPLOYMENTS_TOKEN:
+      CI_APP_ID:
+        required: true
+      CI_APP_PRIVATE_KEY:
         required: true
 
 jobs:
@@ -48,6 +51,17 @@ jobs:
     permissions:
       contents: read
     steps:
+      # Short-lived token from the org's CI GitHub App, scoped to this job's need.
+      - id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          # Every repo the App is installed on (images can come from any of them),
+          # but nothing except Deployments.
+          permission-deployments: write
+
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.after }}
@@ -56,7 +70,7 @@ jobs:
 
       - name: Record deployments
         env:
-          GH_TOKEN: ${{ secrets.DEPLOYMENTS_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           BEFORE: ${{ inputs.before }}
           AFTER: ${{ inputs.after }}
           URLS: ${{ inputs.environment-urls }}
@@ -112,7 +126,7 @@ jobs:
                            production_environment: ($env == "production"),
                            payload: {version: $tag, control_plane: $cp}}' \
                       | gh api "repos/${target}/deployments" --input - --jq .id); then
-              echo "::error::could not create a ${env} deployment in ${target} (does DEPLOYMENTS_TOKEN have Deployments: write there?)"
+              echo "::error::could not create a ${env} deployment in ${target} (is the CI App installed there, with Deployments: write?)"
               failed=1; continue
             fi
             if ! jq -n --arg log "${SERVER}/${REPO}/commit/${AFTER}" --arg url "$(jq -r --arg e "$env" '.[$e] // ""' <<< "$URLS")" \
