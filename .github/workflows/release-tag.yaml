@@ -1,0 +1,161 @@
+# Cut a release tag when a release branch moves, then build it.
+#
+#   push to `release`        → next MINOR of the highest tag in the repo
+#                               1.0.0 → 1.1.0   1.0.99 → 1.1.0   1.1.1 → 1.2.0
+#                               (no tag yet → initial-version, 1.0.0)
+#   push to `releases/<any>` → next PATCH of the release the branch was cut from
+#                               1.0.0 → 1.0.1   1.1.1 → 1.1.2
+#                               (numbered after the highest X.Y.* tag, so two
+#                                hotfix branches off 1.1.0 get 1.1.1 and 1.1.2)
+#   commit already tagged    → nothing (re-runs, a branch pushed with no new commit)
+#
+# The tag is created as a GitHub Release (notes generated from the previous
+# tag), then `workflow` is dispatched on the tag ref: that run sees
+# github.ref_type == 'tag', so build-push.yaml publishes images tagged exactly
+# `X.Y.Z`. A dispatch is needed because a tag created with GITHUB_TOKEN never
+# triggers `on: push: tags` (GitHub's anti-recursion rule).
+#
+# Tags are plain X.Y.Z (no `v`): they are also the image tags in control-plane.
+# A new MAJOR is a human decision: push the tag by hand (git tag 2.0.0 && git
+# push origin 2.0.0); the next merge to `release` then gives 2.1.0.
+#
+# Caller needs:  permissions: { contents: write, actions: write }
+name: release-tag
+on:
+  workflow_call:
+    inputs:
+      release-branch:
+        description: Branch whose pushes cut a minor release
+        type: string
+        default: release
+      hotfix-prefix:
+        description: Branch prefix whose pushes cut a patch release
+        type: string
+        default: releases/
+      initial-version:
+        description: First tag when the repo has none
+        type: string
+        default: 1.0.0
+      workflow:
+        description: Workflow file to dispatch on the new tag (must have workflow_dispatch); empty = don't
+        type: string
+        default: workflow.yaml
+    outputs:
+      version:
+        description: The new tag, or the existing one when the commit was already released
+        value: ${{ jobs.tag.outputs.version }}
+      created:
+        description: "'true' when this run created the tag"
+        value: ${{ jobs.tag.outputs.created }}
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+    concurrency:
+      group: release-tag-${{ github.repository }}
+      cancel-in-progress: false
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      created: ${{ steps.version.outputs.created }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - id: version
+        name: Compute the next version
+        env:
+          BRANCH: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          RELEASE_BRANCH: ${{ inputs.release-branch }}
+          HOTFIX_PREFIX: ${{ inputs.hotfix-prefix }}
+          INITIAL: ${{ inputs.initial-version }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          semver='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+
+          tags() { { git tag "$@" | grep -E "$semver" || true; } | sort -V; }
+
+          [[ "$REF_TYPE" == branch ]] || { echo "::error::run this on a branch push, not ${REF_TYPE}"; exit 1; }
+          [[ "$INITIAL" =~ $semver ]] || { echo "::error::initial-version must be X.Y.Z: $INITIAL"; exit 1; }
+
+          existing=$(tags --points-at "$SHA" | tail -n1)
+          if [[ -n "$existing" ]]; then
+            echo "::notice::${SHA::7} is already released as ${existing}; nothing to do"
+            { echo "version=${existing}"; echo "created=false"; } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          latest=$(tags | tail -n1)
+          if [[ "$BRANCH" == "$RELEASE_BRANCH" ]]; then
+            if [[ -z "$latest" ]]; then
+              next=$INITIAL; prev=''
+            else
+              IFS=. read -r major minor _ <<< "$latest"
+              next="${major}.$((minor + 1)).0"; prev=$latest
+            fi
+          elif [[ "$BRANCH" == "$HOTFIX_PREFIX"* ]]; then
+            base=$(tags --merged "$SHA" | tail -n1)
+            if [[ -z "$base" ]]; then
+              echo "::error::${BRANCH} has no release tag in its history. Cut hotfix branches from a tag: git switch -c ${BRANCH} 1.2.0"
+              exit 1
+            fi
+            IFS=. read -r major minor _ <<< "$base"
+            patch=$(tags -l "${major}.${minor}.*" | tail -n1 | cut -d. -f3)
+            next="${major}.${minor}.$((patch + 1))"; prev=$base
+          else
+            echo "::error::${BRANCH} is neither '${RELEASE_BRANCH}' nor '${HOTFIX_PREFIX}*'"
+            exit 1
+          fi
+
+          if git rev-parse -q --verify "refs/tags/${next}" > /dev/null; then
+            echo "::error::tag ${next} already exists on another commit"
+            exit 1
+          fi
+
+          highest=$(printf '%s\n' "$latest" "$next" | sed '/^$/d' | sort -V | tail -n1)
+          {
+            echo "version=${next}"
+            echo "previous=${prev}"
+            echo "latest=$([[ "$highest" == "$next" ]] && echo true || echo false)"
+            echo "created=true"
+          } >> "$GITHUB_OUTPUT"
+          echo "${BRANCH}@${SHA::7}: ${prev:-<none>} → ${next}"
+
+      - name: Create the release
+        if: steps.version.outputs.created == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ steps.version.outputs.version }}
+          PREVIOUS: ${{ steps.version.outputs.previous }}
+          LATEST: ${{ steps.version.outputs.latest }}
+          SHA: ${{ github.sha }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          args=(--target "$SHA" --title "$VERSION" --generate-notes "--latest=${LATEST}")
+          [[ -z "$PREVIOUS" ]] || args+=(--notes-start-tag "$PREVIOUS")
+          gh release create "$VERSION" "${args[@]}"
+          {
+            echo "### Released \`${VERSION}\`"
+            echo "From \`${BRANCH}\` @ \`${SHA::7}\` (previous: \`${PREVIOUS:-none}\`)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build the tag
+        if: steps.version.outputs.created == 'true' && inputs.workflow != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ steps.version.outputs.version }}
+          WORKFLOW: ${{ inputs.workflow }}
+        run: |
+          set -euo pipefail
+          gh workflow run "$WORKFLOW" --ref "$VERSION"
+          echo "Dispatched ${WORKFLOW} on ${VERSION}: images will be published as :${VERSION}" | tee -a "$GITHUB_STEP_SUMMARY"

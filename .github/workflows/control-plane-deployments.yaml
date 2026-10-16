@@ -1,0 +1,128 @@
+# Show what control-plane deploys in each app repo's Deployments tab, one
+# GitHub environment per cluster directory (development, production).
+#
+# For every clusters/<env>/<ns>/<app>/values.yaml whose image.tag changed in
+# before..after, read the image's OCI labels (build-push.yaml sets them):
+#   org.opencontainers.image.source    → which repo it was built from
+#   org.opencontainers.image.revision  → the exact commit
+# and create a Deployment there: environment <env>, ref = that commit, status
+# success. Apps of one repo changed together (core + wsevent) become one
+# Deployment, so neither hides the other. Older deployments in the environment
+# turn inactive, so the tab shows what is live and the history of what was.
+# Images from elsewhere (redis, nginx, cloudflared) are skipped.
+#
+# "success" means the change is on control-plane main; ArgoCD applies it within
+# a few minutes. Rollbacks (a revert) show up as a deployment of the older commit.
+#
+# Called from control-plane twice, because commits pushed with GITHUB_TOKEN
+# trigger no workflow:
+#   - on push to main (human merges: production releases, manual edits)
+#   - after control-plane-repo-dispatch's bot commit (development deploys)
+#
+# Secret DEPLOYMENTS_TOKEN: fine-grained PAT or GitHub App token with
+# "Deployments: read and write" on the app repos (TLOJ, judge-server).
+# Caller needs:  permissions: { contents: read }
+name: control-plane-deployments
+on:
+  workflow_call:
+    inputs:
+      after:
+        description: Commit to record (full SHA)
+        type: string
+        required: true
+      before:
+        description: Commit before the change; empty or unknown = the parent of `after`
+        type: string
+        default: ''
+      environment-urls:
+        description: 'JSON map environment → URL shown on the deployment, e.g. {"production": "https://oj.tloi.vn"}'
+        type: string
+        default: '{}'
+    secrets:
+      DEPLOYMENTS_TOKEN:
+        required: true
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.after }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Record deployments
+        env:
+          GH_TOKEN: ${{ secrets.DEPLOYMENTS_TOKEN }}
+          BEFORE: ${{ inputs.before }}
+          AFTER: ${{ inputs.after }}
+          URLS: ${{ inputs.environment-urls }}
+          SERVER: ${{ github.server_url }}
+          OWNER: ${{ github.repository_owner }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          [[ "$AFTER" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::after must be a full SHA: $AFTER"; exit 1; }
+          jq -e 'type == "object"' <<< "$URLS" > /dev/null || { echo "::error::environment-urls must be a JSON object"; exit 1; }
+          # New branch, force push or no input: compare with the parent.
+          if [[ ! "$BEFORE" =~ ^[0-9a-f]{40}$ || "$BEFORE" =~ ^0+$ ]] || ! git cat-file -e "${BEFORE}^{commit}" 2> /dev/null; then
+            BEFORE="${AFTER}^"
+          fi
+
+          declare -A groups=()   # "repo|revision|env|tag" → "ns/app, ns/app"
+          while IFS= read -r f; do
+            [[ "$f" =~ ^clusters/([a-z0-9-]+)/([a-z0-9-]+)/([a-z0-9-]+)/values\.yaml$ ]] || continue
+            env=${BASH_REMATCH[1]} ns=${BASH_REMATCH[2]} app=${BASH_REMATCH[3]}
+            [[ -f "$f" ]] || continue                                   # deleted
+            image=$(yq '.image.repository // ""' "$f")
+            tag=$(yq '.image.tag // ""' "$f")
+            old=$( { git show "${BEFORE}:${f}" 2> /dev/null || true; } | yq '.image.tag // ""')
+            [[ -n "$image" && -n "$tag" && "$tag" != "$old" ]] || continue
+
+            if ! labels=$(skopeo inspect --no-tags \
+                  --format '{{index .Labels "org.opencontainers.image.source"}} {{index .Labels "org.opencontainers.image.revision"}}' \
+                  "docker://${image}:${tag}" 2> /dev/null); then
+              echo "::warning file=${f}::cannot inspect ${image}:${tag}; no deployment recorded for ${ns}/${app}"
+              continue
+            fi
+            read -r source revision _ <<< "$labels"
+            # Only images built by this org's repos.
+            [[ "${source,,}" == "${SERVER,,}/${OWNER,,}/"* && "$revision" =~ ^[0-9a-f]{40}$ ]] || continue
+            key="${source#"$SERVER/"}|${revision}|${env}|${tag}"
+            groups[$key]="${groups[$key]:+${groups[$key]}, }${ns}/${app}"
+          done < <(git diff --name-only "$BEFORE" "$AFTER" -- 'clusters/*/*/*/values.yaml')
+
+          if (( ${#groups[@]} == 0 )); then
+            echo "No image changes from this org's repos in ${BEFORE::12}..${AFTER::7}."
+            exit 0
+          fi
+
+          failed=0
+          for key in "${!groups[@]}"; do
+            IFS='|' read -r target revision env tag <<< "$key"
+            apps=${groups[$key]}
+            description="${apps} → ${tag}"
+            if ! id=$(jq -n --arg ref "$revision" --arg env "$env" --arg desc "${description:0:140}" \
+                         --arg cp "${REPO}@${AFTER}" --arg tag "$tag" \
+                         '{ref: $ref, environment: $env, description: $desc,
+                           auto_merge: false, required_contexts: [],
+                           production_environment: ($env == "production"),
+                           payload: {version: $tag, control_plane: $cp}}' \
+                      | gh api "repos/${target}/deployments" --input - --jq .id); then
+              echo "::error::could not create a ${env} deployment in ${target} (does DEPLOYMENTS_TOKEN have Deployments: write there?)"
+              failed=1; continue
+            fi
+            if ! jq -n --arg log "${SERVER}/${REPO}/commit/${AFTER}" --arg url "$(jq -r --arg e "$env" '.[$e] // ""' <<< "$URLS")" \
+                    '{state: "success", log_url: $log, auto_inactive: true,
+                      description: "On control-plane main; ArgoCD applies it within minutes"}
+                     + (if $url != "" then {environment_url: $url} else {} end)' \
+                 | gh api "repos/${target}/deployments/${id}/statuses" --input - > /dev/null; then
+              echo "::error::could not set the status of deployment ${id} in ${target}"
+              failed=1; continue
+            fi
+            echo "- \`${target}\` **${env}** ← \`${tag}\` (${apps}) @ ${revision::7}" | tee -a "$GITHUB_STEP_SUMMARY"
+          done
+          exit "$failed"

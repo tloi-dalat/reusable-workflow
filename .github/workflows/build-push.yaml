@@ -1,7 +1,9 @@
 # Build a container image and (optionally) push it to GHCR with an immutable tag.
 #
 #   image    ghcr.io/<owner>/<inputs.image>
-#   tag      <branch>-<sha7>  (e.g. main-a1b2c3d)   or the git tag on tag pushes
+#   tag      <branch>-<sha7>  (e.g. main-a1b2c3d)   or the git tag on tag refs
+#            (push of a tag, or workflow_dispatch on one — see release-tag.yaml).
+#            A tag that is already published is never overwritten.
 #
 # Multi-arch builds run each platform on its own native runner (no QEMU), push
 # by digest, then stitch one manifest list — the approach judge-server's
@@ -115,7 +117,6 @@ jobs:
           file: ${{ inputs.dockerfile }}
           platforms: ${{ matrix.platform }}
           build-args: ${{ inputs.build-args }}
-          # The source label also links the GHCR package to this repository.
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
@@ -168,8 +169,13 @@ jobs:
         env:
           IMAGE: ${{ needs.meta.outputs.image }}
           VERSION: ${{ needs.meta.outputs.version }}
+          REF_TYPE: ${{ github.ref_type }}
         run: |
           set -euo pipefail
+          if [[ "$REF_TYPE" == tag ]] && docker buildx imagetools inspect "${IMAGE}:${VERSION}" > /dev/null 2>&1; then
+            echo "::error::${IMAGE}:${VERSION} is already published; release tags are immutable"
+            exit 1
+          fi
           # shellcheck disable=SC2046
           docker buildx imagetools create -t "${IMAGE}:${VERSION}" $(printf "${IMAGE}@sha256:%s " *)
 

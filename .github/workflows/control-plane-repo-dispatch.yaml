@@ -4,15 +4,23 @@
 # ArgoCD notices the commit and rolls the workload.
 #
 # Caller needs:  permissions: { contents: write }
+# Output `commit`: the pushed bot commit (empty when nothing changed), for
+# control-plane-deployments.yaml.
 name: control-plane-repo-dispatch
 on:
   workflow_call:
+    outputs:
+      commit:
+        description: SHA of the pushed bot commit; empty when the tags were already current
+        value: ${{ jobs.sync.outputs.commit }}
 
 jobs:
   sync:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      commit: ${{ steps.update.outputs.commit }}
     # Two apps finishing at once must not race on `git push`.
     concurrency:
       group: control-plane-sync
@@ -23,6 +31,7 @@ jobs:
           fetch-depth: 0
 
       - name: Update image tags
+        id: update
         env:
           APPS: ${{ github.event.client_payload.apps }}
           NAMESPACE: ${{ github.event.client_payload.namespace }}
@@ -83,7 +92,10 @@ jobs:
                      -m "Requested by ${ACTOR} from ${SOURCE}@${SHA}"
 
           for attempt in 1 2 3 4 5; do
-            git pull --rebase --quiet origin main && git push origin HEAD:main && exit 0
+            if git pull --rebase --quiet origin main && git push origin HEAD:main; then
+              echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
             echo "push attempt ${attempt} failed; retrying"; sleep $((attempt * 3))
           done
           echo "::error::could not push after 5 attempts"; exit 1
