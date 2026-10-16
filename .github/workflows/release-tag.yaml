@@ -1,10 +1,10 @@
 # Cut a release tag when a release branch moves, then build it.
 #
 #   push to `release`        → next MINOR of the highest tag in the repo
-#                               1.0.0 → 1.1.0   1.0.99 → 1.1.0   1.1.1 → 1.2.0
-#                               (no tag yet → initial-version, 1.0.0)
+#                               0.0.0 → 0.1.0   1.0.99 → 1.1.0   1.1.1 → 1.2.0
+#                               (no tag yet → initial-version, 0.0.0)
 #   push to `releases/<any>` → next PATCH of the release the branch was cut from
-#                               1.0.0 → 1.0.1   1.1.1 → 1.1.2
+#                               0.0.0 → 0.0.1   1.1.1 → 1.1.2
 #                               (numbered after the highest X.Y.* tag, so two
 #                                hotfix branches off 1.1.0 get 1.1.1 and 1.1.2)
 #   commit already tagged    → nothing (re-runs, a branch pushed with no new commit)
@@ -35,7 +35,7 @@ on:
       initial-version:
         description: First tag when the repo has none
         type: string
-        default: 1.0.0
+        default: 0.0.0
       workflow:
         description: Workflow file to dispatch on the new tag (must have workflow_dispatch); empty = don't
         type: string

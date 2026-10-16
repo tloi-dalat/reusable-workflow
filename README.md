@@ -77,15 +77,15 @@ jobs:
     # with:
     #   release-branch: release        # defaults
     #   hotfix-prefix: releases/
-    #   initial-version: 1.0.0
+    #   initial-version: 0.0.0
     #   workflow: workflow.yaml        # dispatched on the new tag; needs `workflow_dispatch`
 ```
 
 | Push to | Tag it builds on | Tag created |
 |---|---|---|
-| `release` | none | `1.0.0` |
-| `release` | `1.0.0` / `1.0.99` / `1.1.1` | `1.1.0` / `1.1.0` / `1.2.0` |
-| `releases/x` cut from `1.0.0` | `1.0.0` (even if `1.3.0` exists) | `1.0.1` |
+| `release` | none | `0.0.0` |
+| `release` | `0.0.0` / `1.0.99` / `1.1.1` | `0.1.0` / `1.1.0` / `1.2.0` |
+| `releases/x` cut from `0.1.0` | `0.1.0` (even if `0.3.0` exists) | `0.1.1` |
 | `releases/x` cut from `1.1.1` | `1.1.1` | `1.1.2` |
 | a second `releases/y` cut from `1.1.0` | `1.1.1` already taken | `1.1.2` (patches never collide) |
 | any, commit already tagged | | nothing |
