@@ -30,7 +30,7 @@ CI never holds a cluster credential. Its only write is a git commit to control-p
 | `release-tag.yaml` | app repos | On a push to `release` / `releases/*`, tag the next `X.Y.Z` (minor / patch), create the GitHub Release, dispatch the image build on the tag |
 | `production-values.yaml` | app repos | On a tag build, add the images and the `image:` blocks to paste into control-plane's production values to the run summary **and the GitHub Release** (production is deployed by PR, not CI) |
 | `dispatch.yaml` | app repos | Ask control-plane to deploy a version to `<env>/<ns>/<apps>` |
-| `control-plane-repo-dispatch.yaml` | control-plane | Receive `sync-version`, validate it, bump tags, commit, push (serialised, with retry) |
+| `control-plane-repo-dispatch.yaml` | control-plane | Receive `sync-version`, validate it, bump tags, commit, push with the CI App (serialised, with retry); `main` lists the App as its only bypass |
 | `control-plane-deployments.yaml` | control-plane | For each image tag changed on control-plane main, create a Deployment (environment `development` / `production`) in the app repo the image was built from, at the exact commit (OCI labels) |
 | `control-plane-lint.yaml` | control-plane | `kustomize build --enable-helm` every app, `kubeconform` the output, reject plaintext secrets |
 | `django-migration-check.yaml` | Django app repos | Fail on missing migrations; put the SQL of new migrations in the PR summary |
@@ -38,6 +38,7 @@ CI never holds a cluster credential. Its only write is a git commit to control-p
 | `django-template-check.yaml` | Django app repos | Compile every Django / Jinja template (no database), annotating syntax errors with file and line |
 | `docker-build-check.yaml` | Repos with images | Build the images on pull requests without pushing, reading `build-push.yaml`'s cache; require its `docker` job |
 | `python-audit.yaml` | Python repos | pip-audit the requirement files (resolved from scratch); run on PRs and weekly; `ignore` takes advisory IDs with reasons |
+| `pr-source-check.yaml` | App repos | Only `main` (of this repo) may be merged into `release`; skipped on PRs to other branches. Inputs `base` / `head` change the rule |
 | `pr-title-check.yaml` | Any repo | Pull request title must be Conventional Commits (`type(scope): summary`); caller must also trigger on `edited` |
 | `workflow-lint.yaml` | Any repo | actionlint (+ shellcheck) on the calling repo's own workflows |
 | `codeql.yaml` | Any repo | CodeQL code scanning (Python, JavaScript/TypeScript, Actions by default); results go to the repo's Security tab and PR alerts |
@@ -115,8 +116,8 @@ for hand-pushed tags), and keep its dev deploy to `refs/heads/main`, or a tag bu
 
 ### control-plane-deployments.yaml
 
-Called by control-plane (`deployments.yaml` on push to main, and `repo-dispatch.yaml` after the bot
-commit, since a commit pushed with `GITHUB_TOKEN` triggers no workflow). The app repo comes from the
+Called by control-plane's `deployments.yaml` on every push to main, bot commits included (the receiver
+pushes with the CI App, and App pushes trigger workflows; `GITHUB_TOKEN` pushes don't). The app repo comes from the
 image's `org.opencontainers.image.source` label and the commit from `org.opencontainers.image.revision`,
 both set by `build-push.yaml`. Apps of one repo changed together (`core` + `wsevent`) become one
 Deployment. Status `success` means "on control-plane main"; ArgoCD applies it within minutes.

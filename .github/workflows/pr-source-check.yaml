@@ -1,0 +1,45 @@
+# Only one branch may be merged into a protected base: by default, only this
+# repo's `main` into `release` (that merge cuts the next minor version, see
+# release-tag.yaml; hotfixes go to a releases/<name> branch cut from a tag).
+# On PRs to any other base the job is skipped, which counts as passing.
+#
+# Call it from a workflow that also runs on `edited`, so changing a PR's base
+# re-runs it (pr-title.yaml is the natural home):
+#   on:
+#     pull_request:
+#       types: [opened, edited, synchronize, reopened]
+#
+# Caller needs:  permissions: {}
+name: pr-source-check
+on:
+  workflow_call:
+    inputs:
+      base:
+        description: Base branch this rule protects
+        type: string
+        default: release
+      head:
+        description: The only branch (of this repository) allowed to merge into `base`
+        type: string
+        default: main
+
+jobs:
+  source:
+    name: source
+    if: github.event_name == 'pull_request' && github.base_ref == inputs.base
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Only ${{ inputs.head }} can be merged into ${{ inputs.base }}
+        env:
+          BASE: ${{ inputs.base }}
+          ALLOWED: ${{ inputs.head }}
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [[ "$HEAD_REF" != "$ALLOWED" || "$HEAD_REPO" != "$REPO" ]]; then
+            echo "::error::Only ${REPO}:${ALLOWED} can be merged into ${BASE} (got ${HEAD_REPO}:${HEAD_REF})."
+            exit 1
+          fi
+          echo "${HEAD_REPO}:${HEAD_REF} → ${BASE}: allowed"

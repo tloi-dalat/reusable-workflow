@@ -18,10 +18,9 @@
 # "success" means the change is on control-plane main; ArgoCD applies it within
 # a few minutes. Rollbacks (a revert) show up as a deployment of the older commit.
 #
-# Called from control-plane twice, because commits pushed with GITHUB_TOKEN
-# trigger no workflow:
-#   - on push to main (human merges: production releases, manual edits)
-#   - after control-plane-repo-dispatch's bot commit (development deploys)
+# Called from control-plane on every push to main: human merges (production
+# releases, manual edits) and control-plane-repo-dispatch's bot commits
+# (development deploys; pushed with the CI App, so they trigger workflows).
 #
 # Credentials: the org's CI GitHub App (org secrets CI_APP_ID, CI_APP_PRIVATE_KEY;
 # callers use `secrets: inherit`). Each run mints a one-hour token with

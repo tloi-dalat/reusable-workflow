@@ -3,12 +3,23 @@
 # bumps image.tag in each app's values.yaml, commits and pushes to main.
 # ArgoCD notices the commit and rolls the workload.
 #
-# Caller needs:  permissions: { contents: write }
-# Output `commit`: the pushed bot commit (empty when nothing changed), for
-# control-plane-deployments.yaml.
+# The commit is pushed with a one-hour token from the org's CI GitHub App
+# (org secrets CI_APP_ID, CI_APP_PRIVATE_KEY; caller: `secrets: inherit`), so:
+#   - control-plane's `main` ruleset can require PRs for people and list the App
+#     as its only bypass (terraform-github), and
+#   - the push triggers control-plane's own workflows (deployments.yaml), which a
+#     GITHUB_TOKEN push never does.
+#
+# Caller needs:  permissions: { contents: read }
+# Output `commit`: the pushed bot commit (empty when nothing changed).
 name: control-plane-repo-dispatch
 on:
   workflow_call:
+    secrets:
+      CI_APP_ID:
+        required: true
+      CI_APP_PRIVATE_KEY:
+        required: true
     outputs:
       commit:
         description: SHA of the pushed bot commit; empty when the tags were already current
@@ -18,7 +29,7 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
     outputs:
       commit: ${{ steps.update.outputs.commit }}
     # Two apps finishing at once must not race on `git push`.
@@ -26,9 +37,18 @@ jobs:
       group: control-plane-sync
       cancel-in-progress: false
     steps:
+      - id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}   # git push below uses it
 
       - name: Update image tags
         id: update
