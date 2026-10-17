@@ -54,7 +54,7 @@ jobs:
             while IFS= read -r key; do
               [[ -z "$key" ]] && continue
               if [[ " $ALLOW " == *" $key "* ]]; then continue; fi
-              echo "::error file=${f}::env ${key} looks like a secret but has a literal value — use the SealedSecret (envFrom / secretKeyRef)"
+              echo "::error file=${f}::env ${key} looks like a secret but has a literal value — put it in Infisical (envFrom / secretKeyRef)"
               bad=1
             done < <(yq '(.env // {}) | to_entries | .[]
                          | select(.key | test("(PASSWORD|SECRET|TOKEN|_KEY)$"))
@@ -70,12 +70,14 @@ jobs:
           set -euo pipefail
           crds='https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
           failed=0
+          : > /tmp/all.yaml
           while IFS= read -r k; do
             dir=$(dirname "$k")
             echo "::group::${dir}"
             if kustomize build --enable-helm "$dir" > /tmp/out.yaml; then
               kubeconform -strict -summary -skip CustomResourceDefinition -kubernetes-version "$K8S_VERSION" \
                 -schema-location default -schema-location "$crds" /tmp/out.yaml || failed=1
+              { cat /tmp/out.yaml; echo '---'; } >> /tmp/all.yaml
             else
               echo "::error::kustomize build failed: ${dir}"; failed=1
             fi
@@ -84,4 +86,19 @@ jobs:
           find clusters -maxdepth 2 -name 'application-set.yaml' -print0 \
             | xargs -0 -r kubeconform -strict -summary -skip CustomResourceDefinition -kubernetes-version "$K8S_VERSION" \
                 -schema-location default -schema-location "$crds" || failed=1
+          exit $failed
+
+      - name: Every image exists
+        run: |
+          set -euo pipefail
+          failed=0
+          while IFS= read -r img; do
+            [[ -z "$img" || "$img" == "null" ]] && continue
+            if skopeo inspect --raw "docker://${img}" > /dev/null 2>&1; then
+              echo "ok  ${img}"
+            else
+              echo "::error::image not found or not public: ${img}"
+              failed=1
+            fi
+          done < <(yq ea -N '.. | select(tag == "!!map" and has("name") and has("image")) | .image' /tmp/all.yaml | sort -u)
           exit $failed

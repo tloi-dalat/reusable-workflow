@@ -114,7 +114,8 @@ Permissions: `contents: read`, `secrets: inherit` (token with Deployments: write
 ## control-plane-lint.yaml
 
 On control-plane PRs: `kustomize build --enable-helm` every app as ArgoCD does, validate the output with
-`kubeconform` (strict, with CRD schemas), and reject secret-looking values in any `values.yaml`.
+`kubeconform` (strict, with CRD schemas), reject secret-looking values in any `values.yaml`, and check that every
+image in the rendered manifests exists in its registry (anonymously, so packages must be public).
 
 Permissions: `contents: read`.
 
