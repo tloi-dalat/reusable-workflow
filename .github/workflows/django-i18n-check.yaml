@@ -1,22 +1,3 @@
-# Translation gate for Django (gettext) repos, on pull requests:
-#   1. every .po file is valid (msgfmt --check: header, python-format, plurals)
-#      and the catalogs compile with the same commands the build runs
-#   2. the .po files are UP TO DATE: re-running makemessages adds no new strings
-#      and leaves none behind (line references are ignored — they move with
-#      every code edit). A locale dir that another command generates (e.g. one
-#      holding translations of a dependency's strings) sets `regenerate` to run
-#      that command instead.
-#   3. every target locale is COMPLETE: no untranslated, no fuzzy and (unless
-#      allowed) no obsolete entries. The source locale is only checked for 1–2.
-#   4. (opt-in, template-globs) every _('...') literal in the templates was
-#      actually extracted: django_jinja's makemessages silently skips some
-#      (multi-line {{ }}, _() in Jinja filter arguments, a 2nd _() in one
-#      expression), so check 2 alone cannot see them.
-#
-# Failures are annotated on the .po line and listed in the job summary, with
-# the command that fixes them.
-#
-# Caller needs:  permissions: { contents: read }
 name: django-i18n-check
 on:
   workflow_call:
@@ -157,8 +138,8 @@ jobs:
           while IFS= read -r line; do
             [[ -z "${line// }" ]] && continue
             echo "::group::makemessages --all ${line}"
-            # shellcheck disable=SC2086  # one line = several arguments
-            python manage.py makemessages --all ${line}
+            read -ra words <<< "$line"
+            python manage.py makemessages --all "${words[@]}"
             echo "::endgroup::"
           done <<< "$ARGS"
 
@@ -179,7 +160,7 @@ jobs:
           source = os.environ['SOURCE_LOCALE']
           allow_obsolete = os.environ['ALLOW_OBSOLETE'] == 'true'
           summary = open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8')
-          MAX_ANNOTATIONS = 30   # per file and problem; the summary has the counts
+          MAX_ANNOTATIONS = 30
 
           def key(e):
               return (e.msgctxt, e.msgid, e.msgid_plural)
@@ -210,8 +191,8 @@ jobs:
               generated = polib.pofile(str(po_path))
               have = {key(e) for e in committed if not e.obsolete}
               want = {key(e) for e in generated if not e.obsolete}
-              missing = sorted(want - have, key=str)      # in the code, not in the .po
-              stale = sorted(have - want, key=str)        # in the .po, gone from the code
+              missing = sorted(want - have, key=str)
+              stale = sorted(have - want, key=str)
               for k in missing[:MAX_ANNOTATIONS]:
                   print(f'::error file={shown}::not extracted yet: "{short(k[1])}"')
               stale_entries = [e for e in committed if not e.obsolete and key(e) in set(stale)]
@@ -234,7 +215,6 @@ jobs:
                            len(missing), len(stale), len(untranslated), len(fuzzy), len(obsolete),
                            '✅' if problems == 0 else '❌'))
 
-          # Check 4: _('...') literals that makemessages never extracted.
           unseen = []
           template_globs = os.environ['TEMPLATE_GLOBS'].split()
           if template_globs:
@@ -245,7 +225,6 @@ jobs:
               for pattern in template_globs:
                   for path in sorted(glob.glob(pattern, recursive=True)):
                       text = pathlib.Path(path).read_text(encoding='utf-8')
-                      # Blank out {# comments #} but keep their newlines, so line numbers stay right.
                       text = comment.sub(lambda m: re.sub(r'[^\n]', ' ', m.group()), text)
                       for m in call.finditer(text):
                           try:

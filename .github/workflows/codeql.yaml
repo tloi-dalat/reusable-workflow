@@ -1,14 +1,3 @@
-# CodeQL code scanning: analyse the calling repo and upload the results to its
-# Security tab, where pull requests get alerts for the code they change.
-#
-# Call it on pull requests AND on pushes to the default branch (plus a schedule):
-# pull request results are compared against the default branch's last analysis.
-# Turn off CodeQL "default setup" in the repo settings first, or the upload is rejected.
-#
-# The jobs pass even when alerts are found. To block merges, add a "Require code
-# scanning results" rule to the branch ruleset instead of requiring these jobs.
-#
-# Caller needs:  permissions: { contents: read, security-events: write, actions: read }
 name: codeql
 on:
   workflow_call:

@@ -1,12 +1,3 @@
-# Review gate for Django schema changes on pull requests:
-#   - fails when models changed without a migration (makemigrations --check)
-#   - writes the SQL of every NEW migration file into the job summary, so a
-#     reviewer reads the actual ALTER TABLE instead of a Python file
-#
-# MySQL has no transactional DDL: a migration that fails halfway stays half
-# applied. Reading the SQL before merge is the cheapest protection there is.
-#
-# Caller needs:  permissions: { contents: read }
 name: django-migration-check
 on:
   workflow_call:
@@ -85,9 +76,6 @@ jobs:
             exit 0
           fi
 
-          # sqlmigrate introspects existing tables for some operations (e.g. RemoveField on
-          # MySQL), so the database must first be at the base branch's schema: hide the new
-          # migration files, migrate, then put them back.
           held=$(mktemp -d)
           for f in "${added[@]}"; do
             mkdir -p "$held/$(dirname "$f")"
@@ -98,7 +86,6 @@ jobs:
             mv "$held/$f" "$f"
           done
 
-          # Only the new migrations are unapplied now; list them in dependency order.
           mapfile -t pending < <(python manage.py showmigrations --plan | awk '$1 == "[" && $2 == "]" { print $3 }')
 
           {
@@ -114,6 +101,5 @@ jobs:
               python manage.py sqlmigrate "$app" "$name"
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
-            # Apply it so the next migration's SQL is generated against the right schema.
             python manage.py migrate "$app" "$name" --noinput > /dev/null
           done

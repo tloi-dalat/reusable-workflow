@@ -1,15 +1,3 @@
-# Only one branch may be merged into a protected base: by default, only this
-# repo's `main` into `release` (that merge cuts the next minor version, see
-# release-tag.yaml; hotfixes go to a releases/<name> branch cut from a tag).
-# On PRs to any other base the job is skipped, which counts as passing.
-#
-# Call it from a workflow that also runs on `edited`, so changing a PR's base
-# re-runs it (pr-title.yaml is the natural home):
-#   on:
-#     pull_request:
-#       types: [opened, edited, synchronize, reopened]
-#
-# Caller needs:  permissions: {}
 name: pr-source-check
 on:
   workflow_call:

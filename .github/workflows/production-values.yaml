@@ -1,15 +1,3 @@
-# After a release tag is built, say how to deploy it — in the run summary AND in
-# the GitHub Release for the tag (Releases tab):
-#   - the images built from the tag (when `images` is given)
-#   - one `image:` block per app, ready to paste into
-#     clusters/<environment>/<namespace>/<app>/values.yaml in control-plane
-#
-# Production is deployed by a reviewed PR, never by CI. This only tells the
-# person writing that PR exactly what to change. Call it from the tag build,
-# after the images are pushed. A tag pushed by hand has no Release yet; one is
-# created (notes generated from the previous tag).
-#
-# Caller needs:  permissions: { contents: write }   (to edit the Release)
 name: production-values
 on:
   workflow_call:
@@ -51,7 +39,6 @@ jobs:
           OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
-          # Same rules control-plane's receiver applies to paths and tags.
           [[ "$APPS"        =~ ^[a-z0-9-]+(,[a-z0-9-]+)*$ ]]  || { echo "::error::bad apps: $APPS"; exit 1; }
           [[ -z "$IMAGES" || "$IMAGES" =~ ^[a-z0-9._-]+(,[a-z0-9._-]+)*$ ]] || { echo "::error::bad images: $IMAGES"; exit 1; }
           [[ "$NAMESPACE"   =~ ^[a-z0-9-]+$ ]]                || { echo "::error::bad namespace: $NAMESPACE"; exit 1; }
@@ -86,15 +73,13 @@ jobs:
           } > section.md
           cat section.md >> "$GITHUB_STEP_SUMMARY"
 
-          # Releases tab. The section sits under a marker, so a re-run replaces
-          # it instead of appending a second copy.
           if ! gh release view "$VERSION" > /dev/null 2>&1; then
             gh release create "$VERSION" --verify-tag --title "$VERSION" --generate-notes
           fi
           marker='<!-- production-values -->'
           body=$(gh release view "$VERSION" --json body --jq .body)
           body=${body%%"$marker"*}
-          body=$(printf '%s' "$body")   # drop trailing blank lines, so re-runs don't add more
+          body=$(printf '%s' "$body")
           {
             printf '%s\n\n%s\n' "$body" "$marker"
             cat section.md

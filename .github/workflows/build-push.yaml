@@ -1,15 +1,3 @@
-# Build a container image and (optionally) push it to GHCR with an immutable tag.
-#
-#   image    ghcr.io/<owner>/<inputs.image>
-#   tag      <branch>-<sha7>  (e.g. main-a1b2c3d)   or the git tag on tag refs
-#            (push of a tag, or workflow_dispatch on one — see release-tag.yaml).
-#            A tag that is already published is never overwritten.
-#
-# Multi-arch builds run each platform on its own native runner (no QEMU), push
-# by digest, then stitch one manifest list — the approach judge-server's
-# docker.yml already used, generalised.
-#
-# Caller needs:  permissions: { contents: read, packages: write }
 name: build-push
 on:
   workflow_call:
@@ -176,8 +164,9 @@ jobs:
             echo "::error::${IMAGE}:${VERSION} is already published; release tags are immutable"
             exit 1
           fi
-          # shellcheck disable=SC2046
-          docker buildx imagetools create -t "${IMAGE}:${VERSION}" $(printf "${IMAGE}@sha256:%s " *)
+          refs=()
+          for d in *; do refs+=("${IMAGE}@sha256:${d}"); done
+          docker buildx imagetools create -t "${IMAGE}:${VERSION}" "${refs[@]}"
 
       - id: inspect
         env:

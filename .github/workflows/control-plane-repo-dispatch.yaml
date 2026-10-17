@@ -1,17 +1,3 @@
-# Receiver side of dispatch.yaml. Called from control-plane's repo-dispatch.yml
-# on `repository_dispatch: [sync-version]`; reads the caller's event payload,
-# bumps image.tag in each app's values.yaml, commits and pushes to main.
-# ArgoCD notices the commit and rolls the workload.
-#
-# The commit is pushed with a one-hour token from the org's CI GitHub App
-# (org secrets CI_APP_ID, CI_APP_PRIVATE_KEY; caller: `secrets: inherit`), so:
-#   - control-plane's `main` ruleset can require PRs for people and list the App
-#     as its only bypass (terraform-github), and
-#   - the push triggers control-plane's own workflows (deployments.yaml), which a
-#     GITHUB_TOKEN push never does.
-#
-# Caller needs:  permissions: { contents: read }
-# Output `commit`: the pushed bot commit (empty when nothing changed).
 name: control-plane-repo-dispatch
 on:
   workflow_call:
@@ -32,7 +18,6 @@ jobs:
       contents: read
     outputs:
       commit: ${{ steps.update.outputs.commit }}
-    # Two apps finishing at once must not race on `git push`.
     concurrency:
       group: control-plane-sync
       cancel-in-progress: false
@@ -48,7 +33,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          token: ${{ steps.app-token.outputs.token }}   # git push below uses it
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Update image tags
         id: update
@@ -63,18 +48,12 @@ jobs:
           SHA: ${{ github.event.client_payload.sha }}
         run: |
           set -euo pipefail
-          # The payload decides which files get written, so validate every field
-          # before it touches a path.
           [[ "$APPS"        =~ ^[a-z0-9-]+(,[a-z0-9-]+)*$ ]] || { echo "::error::bad apps: $APPS"; exit 1; }
           [[ "$NAMESPACE"   =~ ^[a-z0-9-]+$ ]]               || { echo "::error::bad namespace: $NAMESPACE"; exit 1; }
           [[ "$ENVIRONMENT" =~ ^(development|production)$ ]] || { echo "::error::bad environment: $ENVIRONMENT"; exit 1; }
           [[ "$VERSION"     =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || { echo "::error::bad version: $VERSION"; exit 1; }
           [[ -z "$DIGEST" || "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]  || { echo "::error::bad digest: $DIGEST"; exit 1; }
 
-          # Rewrite exactly ONE line (`  <key>: …` inside the top-level `image:`
-          # block) and leave the rest of the file byte-for-byte, so each deploy
-          # commit is a one-line diff that's easy to read and to revert.
-          # (yq -i would re-format the whole file.)
           set_image_field() {
             local f=$1 key=$2 val=$3 tmp
             tmp=$(mktemp)
@@ -88,7 +67,6 @@ jobs:
               exit 1
             fi
             mv "$tmp" "$f"
-            # Read it back through a real YAML parser.
             [[ "$(yq ".image.${key}" "$f")" == "$val" ]] || { echo "::error file=${f}::image.${key} did not update"; exit 1; }
           }
 
@@ -97,7 +75,7 @@ jobs:
             f="clusters/${ENVIRONMENT}/${NAMESPACE}/${app}/values.yaml"
             [[ -f "$f" ]] || { echo "::error::no such app: $f"; exit 1; }
             set_image_field "$f" tag "$VERSION"
-            [[ -z "$DIGEST" ]] || set_image_field "$f" digest "$DIGEST"   # production files carry a `digest: ""` line
+            [[ -z "$DIGEST" ]] || set_image_field "$f" digest "$DIGEST"
             echo "  $f → $VERSION"
           done
 

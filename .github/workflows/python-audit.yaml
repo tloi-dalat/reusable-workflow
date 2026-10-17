@@ -1,12 +1,3 @@
-# Audit Python dependencies for known vulnerabilities with pip-audit (PyPI advisory
-# database), resolving the requirement files from scratch the way a fresh install
-# does. Run it on pull requests and on a schedule: new advisories appear without
-# any code change, especially with unpinned requirements.
-#
-# Each finding is annotated and listed in the job summary with its fix versions.
-# Accepted risks go in `ignore` (one advisory ID per line, `# reason` allowed).
-#
-# Caller needs:  permissions: { contents: read }
 name: python-audit
 on:
   workflow_call:
@@ -57,7 +48,6 @@ jobs:
           done <<< "$IGNORE"
 
           report="$RUNNER_TEMP/audit.json"
-          # Exit 1 just means "vulnerabilities found"; the report below decides the result.
           status=0
           pip-audit "${args[@]}" --progress-spinner off --format json --output "$report" || status=$?
           if [[ ! -s "$report" ]]; then
@@ -68,7 +58,7 @@ jobs:
           python - "$report" <<'PY'
           import json, os, sys
 
-          def esc(text):  # workflow-command escaping
+          def esc(text):
               return str(text).replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
 
           data = json.load(open(sys.argv[1]))

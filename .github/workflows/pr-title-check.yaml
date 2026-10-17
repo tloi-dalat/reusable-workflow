@@ -1,11 +1,3 @@
-# Check that the pull request title follows Conventional Commits,
-# `type(scope): summary` (scope and `!` optional), since a squash merge turns the
-# title into the commit message on main.
-#
-# The caller should also trigger on `edited`, so fixing the title re-runs the check:
-#   on: { pull_request: { types: [opened, edited, synchronize, reopened] } }
-#
-# Caller needs:  permissions: {}
 name: pr-title-check
 on:
   workflow_call:

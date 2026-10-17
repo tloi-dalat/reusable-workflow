@@ -1,11 +1,3 @@
-# Ask <owner>/control-plane to deploy a version: sends a `sync-version`
-# repository_dispatch, which control-plane turns into a bot commit bumping
-# clusters/<environment>/<namespace>/<app>/values.yaml for each app.
-#
-# Credentials: the org's CI GitHub App (org secrets CI_APP_ID, CI_APP_PRIVATE_KEY;
-# callers use `secrets: inherit`). Each run mints a one-hour token for
-# <owner>/control-plane only, with Contents: write — all repository_dispatch needs.
-# CI never talks to the cluster; this commit is its only write.
 name: dispatch
 on:
   workflow_call:
@@ -39,7 +31,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions: {}
     steps:
-      # Short-lived token from the org's CI GitHub App, scoped to this job's need.
       - id: app-token
         uses: actions/create-github-app-token@v2
         with:
@@ -63,8 +54,6 @@ jobs:
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          # Built with jq, never by string interpolation, so no input can
-          # break out of the JSON.
           jq -n \
             --arg apps "$APPS" --arg namespace "$NAMESPACE" --arg environment "$ENVIRONMENT" \
             --arg version "$VERSION" --arg digest "$DIGEST" \

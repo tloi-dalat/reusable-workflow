@@ -1,25 +1,3 @@
-# Cut a release tag when a release branch moves, then build it.
-#
-#   push to `release`        → next MINOR of the highest tag in the repo
-#                               0.0.0 → 0.1.0   1.0.99 → 1.1.0   1.1.1 → 1.2.0
-#                               (no tag yet → initial-version, 0.0.0)
-#   push to `releases/<any>` → next PATCH of the release the branch was cut from
-#                               0.0.0 → 0.0.1   1.1.1 → 1.1.2
-#                               (numbered after the highest X.Y.* tag, so two
-#                                hotfix branches off 1.1.0 get 1.1.1 and 1.1.2)
-#   commit already tagged    → nothing (re-runs, a branch pushed with no new commit)
-#
-# The tag is created as a GitHub Release (notes generated from the previous
-# tag), then `workflow` is dispatched on the tag ref: that run sees
-# github.ref_type == 'tag', so build-push.yaml publishes images tagged exactly
-# `X.Y.Z`. A dispatch is needed because a tag created with GITHUB_TOKEN never
-# triggers `on: push: tags` (GitHub's anti-recursion rule).
-#
-# Tags are plain X.Y.Z (no `v`): they are also the image tags in control-plane.
-# A new MAJOR is a human decision: push the tag by hand (git tag 2.0.0 && git
-# push origin 2.0.0); the next merge to `release` then gives 2.1.0.
-#
-# Caller needs:  permissions: { contents: write, actions: write }
 name: release-tag
 on:
   workflow_call:

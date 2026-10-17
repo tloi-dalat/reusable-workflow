@@ -1,13 +1,3 @@
-# Build the repo's container images on pull requests, without pushing, so anything
-# that breaks `docker build` (asset build, collectstatic, compilemessages, a bad
-# requirement, a missing file) fails the PR instead of the build on main.
-#
-# Reads the layer cache that build-push.yaml writes on main (same scope names), so
-# unchanged layers are not rebuilt. Writes no cache and pushes nothing.
-#
-# Require only the final 'docker' job; the per-image jobs report as 'build <image>'.
-#
-# Caller needs:  permissions: { contents: read }
 name: docker-build-check
 on:
   workflow_call:

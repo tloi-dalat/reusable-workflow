@@ -1,11 +1,3 @@
-# Lint a control-plane repo on every PR:
-#   1. every app directory under clusters/ must `kustomize build --enable-helm`
-#      exactly as ArgoCD will build it
-#   2. the rendered manifests must validate against the Kubernetes (and CRD)
-#      schemas — kubeconform, strict mode
-#   3. no plaintext secret-looking env values in any values.yaml
-#
-# Caller needs:  permissions: { contents: read }
 name: control-plane-lint
 on:
   workflow_call:
@@ -48,7 +40,6 @@ jobs:
           KUBECONFORM_VERSION: ${{ inputs.kubeconform-version }}
         run: |
           set -euo pipefail
-          # `go install` verifies modules against the Go checksum database.
           go install "sigs.k8s.io/kustomize/kustomize/v5@${KUSTOMIZE_VERSION}"
           go install "github.com/yannh/kubeconform/cmd/kubeconform@${KUBECONFORM_VERSION}"
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
@@ -60,8 +51,6 @@ jobs:
           set -euo pipefail
           bad=0
           while IFS= read -r f; do
-            # env entries whose NAME looks secret and whose value is a literal
-            # string (not a valueFrom reference)
             while IFS= read -r key; do
               [[ -z "$key" ]] && continue
               if [[ " $ALLOW " == *" $key "* ]]; then continue; fi
@@ -92,7 +81,6 @@ jobs:
             fi
             echo "::endgroup::"
           done < <(find clusters -name kustomization.yaml | sort)
-          # Standalone manifests applied by hand at bootstrap (ApplicationSets).
           find clusters -maxdepth 2 -name 'application-set.yaml' -print0 \
             | xargs -0 -r kubeconform -strict -summary -skip CustomResourceDefinition -kubernetes-version "$K8S_VERSION" \
                 -schema-location default -schema-location "$crds" || failed=1
