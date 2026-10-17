@@ -14,8 +14,10 @@ on:
     inputs:
       images:
         description: >-
-          JSON list of {"image": ..., "dockerfile": ..., "context": ...}; "image" is the
-          build-push.yaml image name (used for the cache scope), "context" defaults to "."
+          JSON list of {"image": ..., "dockerfile": ..., "context": ..., "build-args": ...};
+          "image" is the build-push.yaml image name (used for the cache scope), "context"
+          defaults to ".", "build-args" is optional (newline-separated KEY=value, as in
+          build-push.yaml)
         type: string
         required: true
       submodules:
@@ -45,6 +47,7 @@ jobs:
         with:
           context: ${{ matrix.context || '.' }}
           file: ${{ matrix.dockerfile }}
+          build-args: ${{ matrix.build-args }}
           platforms: linux/amd64
           outputs: type=cacheonly
           cache-from: type=gha,scope=${{ matrix.image }}-linux-amd64
