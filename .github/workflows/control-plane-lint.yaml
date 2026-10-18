@@ -89,6 +89,11 @@ jobs:
           exit $failed
 
       - name: Every image exists
+        env:
+          IMAGES: >-
+            select(.kind != "CustomResourceDefinition" and .kind != "ConfigMap" and .kind != "Secret")
+            | .. | select(tag == "!!map") | (.image, .imageName, .image.reference?)
+            | select(tag == "!!str" and test("^[^\\s]+$"))
         run: |
           set -euo pipefail
           failed=0
@@ -100,5 +105,5 @@ jobs:
               echo "::error::image not found or not public: ${img}"
               failed=1
             fi
-          done < <(yq ea -N '.. | select(tag == "!!map" and has("name") and has("image")) | .image' /tmp/all.yaml | sort -u)
+          done < <(yq ea -N "$IMAGES" /tmp/all.yaml | sort -u)
           exit $failed
