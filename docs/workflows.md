@@ -115,7 +115,9 @@ Permissions: `contents: read`, `secrets: inherit` (token with Deployments: write
 
 On control-plane PRs: `kustomize build --enable-helm` every app as ArgoCD does, validate the output with
 `kubeconform` (strict, with CRD schemas), reject secret-looking values in any `values.yaml`, and check that every
-image in the rendered manifests exists in its registry (anonymously, so packages must be public).
+image in the rendered manifests exists in its registry (anonymously, so packages must be public). Images are every
+string `image` or `imageName` field (and `image.reference`), in any resource except CRDs, ConfigMaps and Secrets:
+containers, init containers, and operator resources such as `MariaDB` or a CloudNativePG `Cluster`.
 
 Permissions: `contents: read`.
 
