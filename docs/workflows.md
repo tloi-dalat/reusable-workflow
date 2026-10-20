@@ -121,6 +121,14 @@ containers, init containers, and operator resources such as `MariaDB` or a Cloud
 
 Permissions: `contents: read`.
 
+## terraform-check.yaml
+
+On terraform repo PRs, for each directory in `workspaces`: `terraform fmt`, `init -backend=false`, `validate` and
+`test` with mocked providers. No secrets: plans and applies run in Atlantis. The check is named
+`<caller job> / terraform (<workspace>)`.
+
+Permissions: `contents: read`.
+
 ## django-migration-check.yaml
 
 Fails when models changed without a migration, and puts the SQL of every new migration in the job summary.
