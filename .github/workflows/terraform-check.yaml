@@ -18,6 +18,7 @@ jobs:
     env:
       TF_IN_AUTOMATION: '1'
       TF_INPUT: '0'
+      WORKSPACES: ${{ join(fromJSON(inputs.workspaces), ' ') }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -29,32 +30,8 @@ jobs:
       - name: fmt
         run: terraform fmt -check -recursive -diff
       - name: init
-        env:
-          WORKSPACES: ${{ inputs.workspaces }}
-        run: |
-          set -euo pipefail
-          jq -r '.[]' <<< "$WORKSPACES" | while IFS= read -r ws; do
-            echo "::group::$ws"
-            terraform -chdir="$ws" init -backend=false -no-color
-            echo "::endgroup::"
-          done
+        run: for ws in $WORKSPACES; do terraform -chdir="$ws" init -backend=false -no-color; done
       - name: validate
-        env:
-          WORKSPACES: ${{ inputs.workspaces }}
-        run: |
-          set -euo pipefail
-          jq -r '.[]' <<< "$WORKSPACES" | while IFS= read -r ws; do
-            echo "::group::$ws"
-            terraform -chdir="$ws" validate -no-color
-            echo "::endgroup::"
-          done
+        run: for ws in $WORKSPACES; do terraform -chdir="$ws" validate -no-color; done
       - name: test (mocked providers)
-        env:
-          WORKSPACES: ${{ inputs.workspaces }}
-        run: |
-          set -euo pipefail
-          jq -r '.[]' <<< "$WORKSPACES" | while IFS= read -r ws; do
-            echo "::group::$ws"
-            terraform -chdir="$ws" test -no-color
-            echo "::endgroup::"
-          done
+        run: for ws in $WORKSPACES; do terraform -chdir="$ws" test -no-color; done
