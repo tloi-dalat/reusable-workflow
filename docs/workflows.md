@@ -123,9 +123,8 @@ Permissions: `contents: read`.
 
 ## terraform-check.yaml
 
-On terraform repo PRs, for each directory in `workspaces`: `terraform fmt`, `init -backend=false`, `validate` and
-`test` with mocked providers. No secrets: plans and applies run in Atlantis. The check is named
-`<caller job> / terraform (<workspace>)`.
+On terraform repo PRs: `terraform fmt` over the repo, then `init -backend=false`, `validate` and `test` with mocked
+providers in each directory of `workspaces`.
 
 Permissions: `contents: read`.
 

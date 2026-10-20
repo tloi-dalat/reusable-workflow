@@ -15,13 +15,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        workspace: ${{ fromJSON(inputs.workspaces) }}
-    defaults:
-      run:
-        working-directory: ${{ matrix.workspace }}
     env:
       TF_IN_AUTOMATION: '1'
       TF_INPUT: '0'
@@ -35,9 +28,22 @@ jobs:
           terraform_wrapper: false
       - name: fmt
         run: terraform fmt -check -recursive -diff
-      - name: init
-        run: terraform init -backend=false -no-color
-      - name: validate
-        run: terraform validate -no-color
-      - name: test (mocked providers)
-        run: terraform test -no-color
+      - name: init, validate, test
+        env:
+          WORKSPACES: ${{ inputs.workspaces }}
+        run: |
+          set -euo pipefail
+          failed=()
+          while IFS= read -r ws; do
+            echo "::group::$ws"
+            if terraform -chdir="$ws" init -backend=false -no-color \
+              && terraform -chdir="$ws" validate -no-color \
+              && terraform -chdir="$ws" test -no-color; then
+              echo "::endgroup::"
+            else
+              echo "::endgroup::"
+              echo "::error::$ws failed"
+              failed+=("$ws")
+            fi
+          done < <(jq -r '.[]' <<< "$WORKSPACES")
+          [[ ${#failed[@]} -eq 0 ]]
