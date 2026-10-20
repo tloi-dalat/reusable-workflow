@@ -15,16 +15,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        workspace: ${{ fromJSON(inputs.workspaces) }}
-    defaults:
-      run:
-        working-directory: ${{ matrix.workspace }}
     env:
       TF_IN_AUTOMATION: '1'
       TF_INPUT: '0'
+      WORKSPACES: ${{ join(fromJSON(inputs.workspaces), ' ') }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -36,8 +30,8 @@ jobs:
       - name: fmt
         run: terraform fmt -check -recursive -diff
       - name: init
-        run: terraform init -backend=false -no-color
+        run: for ws in $WORKSPACES; do terraform -chdir="$ws" init -backend=false -no-color; done
       - name: validate
-        run: terraform validate -no-color
+        run: for ws in $WORKSPACES; do terraform -chdir="$ws" validate -no-color; done
       - name: test (mocked providers)
-        run: terraform test -no-color
+        run: for ws in $WORKSPACES; do terraform -chdir="$ws" test -no-color; done
