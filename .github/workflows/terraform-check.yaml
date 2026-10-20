@@ -28,22 +28,33 @@ jobs:
           terraform_wrapper: false
       - name: fmt
         run: terraform fmt -check -recursive -diff
-      - name: init, validate, test
+      - name: init
         env:
           WORKSPACES: ${{ inputs.workspaces }}
         run: |
           set -euo pipefail
-          failed=()
-          while IFS= read -r ws; do
+          jq -r '.[]' <<< "$WORKSPACES" | while IFS= read -r ws; do
             echo "::group::$ws"
-            if terraform -chdir="$ws" init -backend=false -no-color \
-              && terraform -chdir="$ws" validate -no-color \
-              && terraform -chdir="$ws" test -no-color; then
-              echo "::endgroup::"
-            else
-              echo "::endgroup::"
-              echo "::error::$ws failed"
-              failed+=("$ws")
-            fi
-          done < <(jq -r '.[]' <<< "$WORKSPACES")
-          [[ ${#failed[@]} -eq 0 ]]
+            terraform -chdir="$ws" init -backend=false -no-color
+            echo "::endgroup::"
+          done
+      - name: validate
+        env:
+          WORKSPACES: ${{ inputs.workspaces }}
+        run: |
+          set -euo pipefail
+          jq -r '.[]' <<< "$WORKSPACES" | while IFS= read -r ws; do
+            echo "::group::$ws"
+            terraform -chdir="$ws" validate -no-color
+            echo "::endgroup::"
+          done
+      - name: test (mocked providers)
+        env:
+          WORKSPACES: ${{ inputs.workspaces }}
+        run: |
+          set -euo pipefail
+          jq -r '.[]' <<< "$WORKSPACES" | while IFS= read -r ws; do
+            echo "::group::$ws"
+            terraform -chdir="$ws" test -no-color
+            echo "::endgroup::"
+          done
