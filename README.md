@@ -10,4 +10,3 @@ push to releases/*    release-tag → X.Y.(Z+1)     production: a reviewed contr
 ```
 
 - `docs/workflows.md`: every workflow, its permissions and how to call it
-- `docs/setup.md`: the CI GitHub App, GHCR, conventions
