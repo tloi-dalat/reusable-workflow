@@ -10,11 +10,11 @@ on:
         type: string
         required: true
       apps:
-        description: Comma-separated app directories that move together, e.g. core,wsevent
+        description: Comma-separated app directories that move together, e.g. site,event
         type: string
         required: true
       images:
-        description: Comma-separated image names built from the tag, e.g. oj-core,oj-wsevent (listed in the Release)
+        description: Comma-separated image names built from the tag, e.g. online-judge-site,online-judge-event (listed in the Release)
         type: string
         default: ''
       environment:

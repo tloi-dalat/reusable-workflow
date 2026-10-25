@@ -13,11 +13,11 @@ each platform on its own native runner, push by digest, then merge one manifest 
 Permissions: `contents: read, packages: write`. Outputs: `version`, `image`, `digest`.
 
 ```yaml
-  core:
+  site:
     permissions: { contents: read, packages: write }
     uses: tloi-dalat/reusable-workflow/.github/workflows/build-push.yaml@main
     with:
-      image: oj-core
+      image: online-judge-site
       dockerfile: Dockerfile
       platforms: '["linux/amd64"]'
       build-args: |
@@ -66,14 +66,14 @@ Permissions: `contents: write`.
 ```yaml
   production-values:
     if: github.ref_type == 'tag'
-    needs: [core, wsevent]
+    needs: [site, event]
     permissions: { contents: write }
     uses: tloi-dalat/reusable-workflow/.github/workflows/production-values.yaml@main
     with:
-      apps: core,wsevent
-      images: oj-core,oj-wsevent
+      apps: site,event
+      images: online-judge-site,online-judge-event
       namespace: online-judge
-      version: ${{ needs.core.outputs.version }}
+      version: ${{ needs.site.outputs.version }}
 ```
 
 ## dispatch.yaml
@@ -83,13 +83,13 @@ CI App token with Contents: write on control-plane only.
 
 ```yaml
   deploy-dev:
-    needs: [core]
+    needs: [site]
     uses: tloi-dalat/reusable-workflow/.github/workflows/dispatch.yaml@main
     with:
-      apps: core,wsevent
+      apps: site,event
       namespace: online-judge
       environment: development
-      version: ${{ needs.core.outputs.version }}
+      version: ${{ needs.site.outputs.version }}
     secrets: inherit
 ```
 

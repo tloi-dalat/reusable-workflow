@@ -3,7 +3,7 @@ on:
   workflow_call:
     inputs:
       image:
-        description: Image name under ghcr.io/<owner>/ (e.g. oj-core)
+        description: Image name under ghcr.io/<owner>/ (e.g. online-judge-site)
         type: string
         required: true
       context:
