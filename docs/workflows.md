@@ -114,10 +114,14 @@ Permissions: `contents: read`, `secrets: inherit` (token with Deployments: write
 ## control-plane-lint.yaml
 
 On control-plane PRs: `kustomize build --enable-helm` every app as ArgoCD does, validate the output with
-`kubeconform` (strict, with CRD schemas), reject secret-looking values in any `values.yaml`, and check that every
+`kubeconform` (strict; custom resources against schemas generated from the CRDs the repo itself deploys, then the
+[CRDs-catalog](https://github.com/datreeio/CRDs-catalog)), reject secret-looking values in any `values.yaml`, and check that every
 image in the rendered manifests exists in its registry (anonymously, so packages must be public). Images are every
 string `image` or `imageName` field (and `image.reference`), in any resource except CRDs, ConfigMaps and Secrets:
 containers, init containers, and operator resources such as `MariaDB` or a CloudNativePG `Cluster`.
+
+Every problem is reported once, at the end: an error annotation per app on its `kustomization.yaml` and a table in
+the job summary, so a failing app is visible without opening the logs.
 
 Permissions: `contents: read`.
 

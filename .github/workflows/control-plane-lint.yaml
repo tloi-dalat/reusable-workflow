@@ -63,30 +63,60 @@ jobs:
           done < <(find clusters -name values.yaml)
           exit $bad
 
-      - name: Build and validate every app
+      - name: Build every app
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/build"
+          : > "$RUNNER_TEMP/failures.tsv"
+          while IFS= read -r k; do
+            dir=$(dirname "$k")
+            out="$RUNNER_TEMP/build/${dir//\//__}.yaml"
+            if ! kustomize build --enable-helm "$dir" > "$out" 2> "$RUNNER_TEMP/err.txt"; then
+              msg=$(grep -m1 -i 'error' "$RUNNER_TEMP/err.txt" || head -n1 "$RUNNER_TEMP/err.txt")
+              printf '%s\t%s\t%s\n' "$dir" "kustomize build" "$msg" >> "$RUNNER_TEMP/failures.tsv"
+              rm -f "$out"
+            fi
+          done < <(find clusters -name kustomization.yaml | sort)
+          echo "Built $(find "$RUNNER_TEMP/build" -name '*.yaml' | wc -l) apps"
+
+      - name: Schemas from the CRDs we deploy
+        env:
+          KUBECONFORM_VERSION: ${{ inputs.kubeconform-version }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/schemas"
+          cd "$RUNNER_TEMP/schemas"
+          python3 -c 'import yaml' 2> /dev/null || pip install --quiet pyyaml
+          curl -sfL "https://raw.githubusercontent.com/yannh/kubeconform/${KUBECONFORM_VERSION}/scripts/openapi2jsonschema.py" -o "$RUNNER_TEMP/openapi2jsonschema.py"
+          shopt -s nullglob
+          builds=("$RUNNER_TEMP"/build/*.yaml)
+          if (( ${#builds[@]} > 0 )); then
+            FILENAME_FORMAT='{fullgroup}-{kind}_{version}' python3 "$RUNNER_TEMP/openapi2jsonschema.py" "${builds[@]}" > /dev/null
+          fi
+          echo "Generated $(ls | wc -l) schemas"
+
+      - name: Validate every app
         env:
           K8S_VERSION: ${{ inputs.kubernetes-version }}
         run: |
           set -euo pipefail
-          crds='https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
-          failed=0
-          : > /tmp/all.yaml
-          while IFS= read -r k; do
-            dir=$(dirname "$k")
-            echo "::group::${dir}"
-            if kustomize build --enable-helm "$dir" > /tmp/out.yaml; then
-              kubeconform -strict -summary -skip CustomResourceDefinition -kubernetes-version "$K8S_VERSION" \
-                -schema-location default -schema-location "$crds" /tmp/out.yaml || failed=1
-              { cat /tmp/out.yaml; echo '---'; } >> /tmp/all.yaml
-            else
-              echo "::error::kustomize build failed: ${dir}"; failed=1
-            fi
-            echo "::endgroup::"
-          done < <(find clusters -name kustomization.yaml | sort)
-          find clusters -maxdepth 2 -name 'application-set.yaml' -print0 \
-            | xargs -0 -r kubeconform -strict -summary -skip CustomResourceDefinition -kubernetes-version "$K8S_VERSION" \
-                -schema-location default -schema-location "$crds" || failed=1
-          exit $failed
+          own="$RUNNER_TEMP/schemas/{{.Group}}-{{.ResourceKind}}_{{.ResourceAPIVersion}}.json"
+          catalog='https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+          validate() {
+            kubeconform -strict -skip CustomResourceDefinition -kubernetes-version "$K8S_VERSION" -output json \
+              -schema-location default -schema-location "$own" -schema-location "$catalog" "$2" > "$RUNNER_TEMP/result.json" || true
+            jq -r --arg dir "$1" '.resources[]? | select(.status == "statusInvalid" or .status == "statusError")
+              | [$dir, "\(.kind) \(.name)", (.msg | gsub("[\t\n]"; " "))] | @tsv' "$RUNNER_TEMP/result.json" >> "$RUNNER_TEMP/failures.tsv" \
+              || printf '%s\t%s\t%s\n' "$1" "kubeconform" "could not validate the rendered manifests" >> "$RUNNER_TEMP/failures.tsv"
+          }
+          shopt -s nullglob
+          for f in "$RUNNER_TEMP"/build/*.yaml; do
+            name=$(basename "$f" .yaml)
+            validate "${name//__//}" "$f"
+          done
+          for f in clusters/*/application-set.yaml; do
+            validate "$f" "$f"
+          done
 
       - name: Every image exists
         env:
@@ -96,14 +126,44 @@ jobs:
             | select(tag == "!!str" and test("^[^\\s]+$"))
         run: |
           set -euo pipefail
-          failed=0
-          while IFS= read -r img; do
-            [[ -z "$img" || "$img" == "null" ]] && continue
-            if skopeo inspect --raw "docker://${img}" > /dev/null 2>&1; then
-              echo "ok  ${img}"
-            else
-              echo "::error::image not found or not public: ${img}"
-              failed=1
-            fi
-          done < <(yq ea -N "$IMAGES" /tmp/all.yaml | sort -u)
-          exit $failed
+          declare -A checked=()
+          shopt -s nullglob
+          for f in "$RUNNER_TEMP"/build/*.yaml; do
+            name=$(basename "$f" .yaml)
+            dir=${name//__//}
+            while IFS= read -r img; do
+              [[ -z "$img" || "$img" == "null" ]] && continue
+              if [[ -z "${checked[$img]:-}" ]]; then
+                if skopeo inspect --raw "docker://${img}" > /dev/null 2>&1; then checked[$img]=ok; else checked[$img]=missing; fi
+              fi
+              if [[ "${checked[$img]}" == missing ]]; then
+                printf '%s\t%s\t%s\n' "$dir" "image" "${img} not found or not public" >> "$RUNNER_TEMP/failures.tsv"
+              fi
+            done < <(yq ea -N "$IMAGES" "$f" | sort -u)
+          done
+          echo "Checked ${#checked[@]} images"
+
+      - name: Report
+        if: always()
+        run: |
+          set -euo pipefail
+          f="$RUNNER_TEMP/failures.tsv"
+          if [[ ! -s "$f" ]]; then
+            echo "### Every app builds, validates and has its images" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          {
+            echo "### $(cut -f1 "$f" | sort -u | wc -l) app(s) failed"
+            echo
+            echo "| App | What | Problem |"
+            echo "|---|---|---|"
+            sort -u "$f" | while IFS=$'\t' read -r dir what msg; do
+              printf '| `%s` | %s | %s |\n' "$dir" "$what" "${msg//|/\\|}"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+          sort -u "$f" | while IFS=$'\t' read -r dir what msg; do
+            file="$dir/kustomization.yaml"
+            [[ -f "$file" ]] || file="$dir"
+            echo "::error file=${file},title=${dir}: ${what}::${msg}"
+          done
+          exit 1
