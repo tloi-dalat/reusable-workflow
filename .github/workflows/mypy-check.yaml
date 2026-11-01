@@ -1,0 +1,54 @@
+name: mypy-check
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        type: string
+        default: '3.12'
+      requirements:
+        description: Space-separated requirement files
+        type: string
+        default: requirements.txt
+      packages:
+        description: Space-separated pip packages, mypy and its stubs
+        type: string
+        default: mypy
+      paths:
+        description: Space-separated paths to check
+        type: string
+        default: .
+
+jobs:
+  check:
+    name: mypy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ inputs.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        env:
+          REQUIREMENTS: ${{ inputs.requirements }}
+          PACKAGES: ${{ inputs.packages }}
+        run: |
+          set -euo pipefail
+          read -ra packages <<< "$PACKAGES"
+          pip install "${packages[@]}"
+          for r in $REQUIREMENTS; do pip install -r "$r"; done
+
+      - name: mypy
+        env:
+          PATHS: ${{ inputs.paths }}
+        run: |
+          set -euo pipefail
+          read -ra paths <<< "$PATHS"
+          mypy --version
+          mypy "${paths[@]}"

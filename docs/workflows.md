@@ -163,6 +163,109 @@ providers in each directory of `workspaces`.
 
 Permissions: `contents: read`.
 
+## flake8-check.yaml
+
+flake8 with the repo's own config (`.flake8`, `setup.cfg` or `tox.ini`). `packages` lists flake8 and its plugins.
+
+Permissions: `contents: read`.
+
+```yaml
+  flake8:
+    name: check-flake8
+    permissions: { contents: read }
+    uses: tloi-dalat/reusable-workflow/.github/workflows/flake8-check.yaml@main
+    with:
+      python-version: '3.14'
+      packages: 'flake8 flake8-import-order flake8-quotes'
+```
+
+## django-test-check.yaml
+
+`manage.py test` against a MySQL or MariaDB service, with the CI settings installed. `setup` runs commands first
+(e.g. `compilejsi18n`); `labels` limits which apps are tested.
+
+Permissions: `contents: read`.
+
+```yaml
+  tests:
+    name: check-tests
+    permissions: { contents: read }
+    uses: tloi-dalat/reusable-workflow/.github/workflows/django-test-check.yaml@main
+    with:
+      python-version: '3.14'
+      mysql-image: mariadb:10.11
+      setup: python manage.py compilejsi18n
+      labels: judge urlshortener
+```
+
+## node-build-check.yaml
+
+`npm ci`, then the `build` command, to catch broken styles or scripts before merging.
+
+Permissions: `contents: read`.
+
+```yaml
+  node:
+    name: check-node
+    permissions: { contents: read }
+    uses: tloi-dalat/reusable-workflow/.github/workflows/node-build-check.yaml@main
+    with:
+      node-version: '26.x'
+      build: ./make_style.sh
+```
+
+## mypy-check.yaml
+
+mypy on `paths`, after installing `packages` (mypy and stubs) and the requirement files.
+
+Permissions: `contents: read`.
+
+```yaml
+  mypy:
+    name: check-mypy
+    permissions: { contents: read }
+    uses: tloi-dalat/reusable-workflow/.github/workflows/mypy-check.yaml@main
+    with:
+      python-version: '3.14'
+      packages: 'mypy types-requests'
+      paths: dmoj
+```
+
+## clang-format-check.yaml
+
+`clang-format --dry-run -Werror` on the tracked files matching `files` (git pathspecs, `:(exclude,glob)…` to skip),
+with the repo's `.clang-format`. Pin `version` to what the code was formatted with.
+
+Permissions: `contents: read`.
+
+```yaml
+  clang-format:
+    name: check-clang-format
+    permissions: { contents: read }
+    uses: tloi-dalat/reusable-workflow/.github/workflows/clang-format-check.yaml@main
+    with:
+      version: '12.0.1'
+      files: ':(glob)dmoj/**/*.cpp :(glob)dmoj/**/*.h :(exclude,glob)**/_cptbox.cpp'
+```
+
+## sdist-check.yaml
+
+Builds the sdist (`python -m build --sdist`), installs it, then runs `smoke`. Catches files missing from
+`MANIFEST.in` and broken builds.
+
+Permissions: `contents: read`.
+
+```yaml
+  sdist:
+    name: check-sdist
+    permissions: { contents: read }
+    uses: tloi-dalat/reusable-workflow/.github/workflows/sdist-check.yaml@main
+    with:
+      python-version: '3.14'
+      apt-packages: libseccomp-dev
+      smoke: dmoj-autoconf
+```
+
 ## django-migration-check.yaml
 
 Fails when models changed without a migration, and puts the SQL of every new migration in the job summary.
