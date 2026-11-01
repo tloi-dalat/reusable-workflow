@@ -1,0 +1,54 @@
+name: sdist-check
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        type: string
+        default: '3.12'
+      apt-packages:
+        description: Space-separated system packages needed to install the sdist
+        type: string
+        default: ''
+      smoke:
+        description: Command run after installing the sdist, e.g. the package's CLI
+        type: string
+        default: ''
+
+jobs:
+  check:
+    name: sdist
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Install system packages
+        if: inputs.apt-packages != ''
+        env:
+          PACKAGES: ${{ inputs.apt-packages }}
+        run: |
+          set -euo pipefail
+          read -ra packages <<< "$PACKAGES"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends "${packages[@]}"
+
+      - name: Build the sdist
+        run: |
+          pip install build
+          python -m build --sdist
+
+      - name: Install the sdist
+        run: pip install dist/*.tar.gz
+
+      - name: Smoke test
+        if: inputs.smoke != ''
+        env:
+          SMOKE: ${{ inputs.smoke }}
+        run: bash -c "$SMOKE"

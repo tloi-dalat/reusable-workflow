@@ -1,0 +1,46 @@
+name: clang-format-check
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: clang-format version from PyPI, e.g. 12.0.1 or 18.*
+        type: string
+        default: '18.*'
+      files:
+        description: Space-separated git pathspecs of the files to check
+        type: string
+        default: ':(glob)**/*.c :(glob)**/*.cpp :(glob)**/*.h'
+
+jobs:
+  check:
+    name: clang-format
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install clang-format
+        env:
+          VERSION: ${{ inputs.version }}
+        run: pip install "clang-format==${VERSION}"
+
+      - name: clang-format
+        env:
+          FILES: ${{ inputs.files }}
+        run: |
+          set -euo pipefail
+          read -ra pathspecs <<< "$FILES"
+          clang-format --version
+          mapfile -d '' files < <(git ls-files -z -- "${pathspecs[@]}")
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "No files match; nothing to check."
+            exit 0
+          fi
+          clang-format --dry-run -Werror --color "${files[@]}"

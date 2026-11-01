@@ -1,0 +1,39 @@
+name: flake8-check
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        type: string
+        default: '3.12'
+      packages:
+        description: Space-separated pip packages, flake8 and its plugins
+        type: string
+        default: flake8
+
+jobs:
+  check:
+    name: flake8
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Install flake8
+        env:
+          PACKAGES: ${{ inputs.packages }}
+        run: |
+          set -euo pipefail
+          read -ra packages <<< "$PACKAGES"
+          pip install "${packages[@]}"
+
+      - name: flake8
+        run: |
+          flake8 --version
+          flake8
