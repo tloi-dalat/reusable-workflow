@@ -93,6 +93,37 @@ CI App token with Contents: write on control-plane only.
     secrets: inherit
 ```
 
+## upstream-sync.yaml
+
+Keeps a fork in step with its upstream through one PR from a bot branch (`sync` by default), merged with a merge
+commit so upstream history stays intact and later syncs don't conflict again. Uses the CI App, which needs
+Contents, Pull requests and Workflows: write, and a bypass on the base branch's ruleset in terraform-github
+(rulesets only allow squash into `main`).
+
+- Run by hand: if the PR is approved and its required checks pass, merges it; otherwise pushes upstream to `sync`
+  and opens the PR, or merges new upstream commits into it. Never force-pushes.
+- On an approving review of that PR: waits for the required checks, then merges it at the approved commit.
+- Conflicts are resolved on the PR (**Resolve conflicts**, or merge `main` into `sync` locally). GitHub deletes
+  `sync` after the merge.
+
+Permissions: `{}`, `secrets: inherit`.
+
+```yaml
+on:
+  workflow_dispatch:
+  pull_request_review:
+    types: [submitted]
+jobs:
+  upstream:
+    permissions: {}
+    uses: tloi-dalat/reusable-workflow/.github/workflows/upstream-sync.yaml@main
+    with:
+      upstream: VNOI-Admin/OJ
+    secrets: inherit
+```
+
+Drop `pull_request_review` to merge only by hand: approve, then run it again.
+
 ## control-plane-repo-dispatch.yaml
 
 The receiver, called by control-plane on `repository_dispatch: [sync-version]`. Validates the payload, bumps
