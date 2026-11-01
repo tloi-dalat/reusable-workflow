@@ -1,0 +1,156 @@
+name: upstream-sync
+on:
+  workflow_call:
+    inputs:
+      upstream:
+        description: Upstream repository, owner/name
+        type: string
+        required: true
+      upstream-branch:
+        type: string
+        default: master
+      branch:
+        description: Branch the bot keeps the sync PR on
+        type: string
+        default: sync
+      base:
+        type: string
+        default: main
+      title:
+        type: string
+        default: 'chore: sync upstream'
+    secrets:
+      CI_APP_ID:
+        required: true
+      CI_APP_PRIVATE_KEY:
+        required: true
+
+jobs:
+  sync:
+    name: sync
+    if: >-
+      github.event_name != 'pull_request_review' || (
+        github.event.review.state == 'approved' &&
+        github.event.pull_request.base.ref == inputs.base &&
+        github.event.pull_request.head.ref == inputs.branch &&
+        github.event.pull_request.head.repo.full_name == github.repository
+      )
+    runs-on: ubuntu-latest
+    permissions: {}
+    timeout-minutes: 90
+    concurrency:
+      group: upstream-sync-${{ github.repository }}-${{ github.event_name == 'pull_request_review' && 'merge' || 'open' }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request_review' }}
+    env:
+      UPSTREAM: ${{ inputs.upstream }}
+      UPSTREAM_BRANCH: ${{ inputs.upstream-branch }}
+      BRANCH: ${{ inputs.branch }}
+      BASE: ${{ inputs.base }}
+      TITLE: ${{ inputs.title }}
+      REPO: ${{ github.repository }}
+    steps:
+      - id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-workflows: write
+
+      - name: Merge the approved PR
+        if: github.event_name == 'pull_request_review'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          gh pr checks "$PR" --repo "$REPO" --required --watch --fail-fast --interval 30
+
+          state=$(gh pr view "$PR" --repo "$REPO" --json headRefOid,reviewDecision --jq '.headRefOid + " " + .reviewDecision')
+          if [[ "$state" != "${SHA} APPROVED" ]]; then
+            echo "::notice::#${PR} is not approved at ${SHA} (${state}); not merging."
+            exit 0
+          fi
+
+          gh api -X PUT "repos/${REPO}/pulls/${PR}/merge" \
+            -f merge_method=merge -f sha="$SHA" -f commit_title="${PR_TITLE} (#${PR})" -f commit_message=""
+          echo "Merged #${PR} at ${SHA}." | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/checkout@v7
+        if: github.event_name != 'pull_request_review'
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Merge the PR if it is ready, else update it from upstream
+        if: github.event_name != 'pull_request_review'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          SLUG: ${{ steps.app-token.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          [[ "$UPSTREAM" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo "::error::bad upstream: $UPSTREAM"; exit 1; }
+
+          pr=$(gh pr list --repo "$REPO" --head "$BRANCH" --base "$BASE" --state open --json number --jq '.[0].number // empty')
+          if [[ -n "$pr" ]]; then
+            read -r sha decision < <(gh pr view "$pr" --repo "$REPO" --json headRefOid,reviewDecision --jq '.headRefOid + " " + .reviewDecision')
+            if [[ "$decision" == APPROVED ]] && gh pr checks "$pr" --repo "$REPO" --required; then
+              pr_title=$(gh pr view "$pr" --repo "$REPO" --json title --jq .title)
+              gh api -X PUT "repos/${REPO}/pulls/${pr}/merge" \
+                -f merge_method=merge -f sha="$sha" -f commit_title="${pr_title} (#${pr})" -f commit_message=""
+              echo "Merged #${pr} at ${sha}." | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+          fi
+
+          bot_id=$(gh api "users/${SLUG}[bot]" --jq .id)
+          git config user.name  "${SLUG}[bot]"
+          git config user.email "${bot_id}+${SLUG}[bot]@users.noreply.github.com"
+
+          git fetch --no-tags "https://github.com/${UPSTREAM}.git" "+refs/heads/${UPSTREAM_BRANCH}:refs/remotes/upstream/${UPSTREAM_BRANCH}"
+          up="upstream/${UPSTREAM_BRANCH}"
+          up_sha=$(git rev-parse --short "$up")
+
+          if git merge-base --is-ancestor "$up" "origin/${BASE}"; then
+            echo "${BASE} already contains ${UPSTREAM}@${up_sha}; nothing to sync." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if git rev-parse --verify --quiet "origin/${BRANCH}" >/dev/null; then
+            git checkout -q -B "$BRANCH" "origin/${BRANCH}"
+            if ! git merge --no-edit -m "chore: merge upstream ${up_sha}" "$up"; then
+              git merge --abort
+              echo "::warning::${BRANCH} conflicts with ${UPSTREAM}@${up_sha}; finish or close #${pr} first."
+              exit 0
+            fi
+          else
+            git checkout -q -B "$BRANCH" "$up"
+          fi
+
+          git push origin "$BRANCH"
+
+          if [[ -n "$pr" ]]; then
+            echo "Updated #${pr} to ${UPSTREAM}@${up_sha}." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          body=$(cat <<BODY
+          Merges [${UPSTREAM}@${UPSTREAM_BRANCH}](https://github.com/${UPSTREAM}/commits/${UPSTREAM_BRANCH}) (\`${up_sha}\`) into \`${BASE}\`.
+
+          **Conflicts:** use **Resolve conflicts** on this PR, or locally:
+
+          \`\`\`sh
+          git fetch origin
+          git switch ${BRANCH}
+          git merge origin/${BASE}
+          git push origin ${BRANCH}
+          \`\`\`
+
+          Once the required checks pass and it is approved, the bot merges it with a merge commit.
+          BODY
+          )
+          gh pr create --repo "$REPO" --base "$BASE" --head "$BRANCH" --title "$TITLE" --body "$body"
