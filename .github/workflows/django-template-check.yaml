@@ -14,6 +14,7 @@ on:
         type: string
         default: ''
       settings-target:
+        description: Path the project's settings.py loads its local settings from, e.g. myproject/local_settings.py
         type: string
         default: ''
       template-dirs:

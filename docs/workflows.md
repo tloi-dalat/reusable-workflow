@@ -181,8 +181,12 @@ Permissions: `contents: read`.
 
 ## django-test-check.yaml
 
-`manage.py test` against a MySQL or MariaDB service, with the CI settings installed. `setup` runs commands first
-(e.g. `compilejsi18n`); `labels` limits which apps are tested.
+`manage.py test` against a database service, with the CI settings installed: `settings-file` (default
+`.ci.settings.py`) is copied to `settings-target` (required), the local settings file the project's `settings.py`
+loads. `database` picks the service:
+`mysql` (default; `mysql-image`, port 13306) or `postgres` (`postgres-image`, port 15432). Both use user `root`,
+password `root` and database `ci`. `setup` runs commands first (e.g. `compilejsi18n`); `labels` limits which
+apps are tested.
 
 Permissions: `contents: read`.
 
@@ -193,9 +197,19 @@ Permissions: `contents: read`.
     uses: tloi-dalat/reusable-workflow/.github/workflows/django-test-check.yaml@main
     with:
       python-version: '3.14'
+      settings-target: dmoj/local_settings.py
       mysql-image: mariadb:10.11
       setup: python manage.py compilejsi18n
       labels: judge urlshortener
+```
+
+On PostgreSQL:
+
+```yaml
+    with:
+      database: postgres
+      postgres-image: postgres:17
+      settings-target: tloq/local_settings.py
 ```
 
 ## node-build-check.yaml
@@ -269,7 +283,9 @@ Permissions: `contents: read`.
 ## django-migration-check.yaml
 
 Fails when models changed without a migration, and puts the SQL of every new migration in the job summary.
-MySQL has no transactional DDL, so reading the SQL before merging is the cheapest protection.
+MySQL has no transactional DDL, so reading the SQL before merging is the cheapest protection. Takes the same
+`settings-file`, `settings-target`, `database`, `mysql-image` and `postgres-image` inputs as
+`django-test-check.yaml`.
 
 Permissions: `contents: read`.
 

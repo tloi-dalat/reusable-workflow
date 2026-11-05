@@ -10,16 +10,25 @@ on:
         type: string
         default: requirements.txt
       settings-file:
-        description: CI settings copied over settings-target before running
+        description: The repo's CI settings file (database, cache, ...), copied to settings-target before running
         type: string
         default: .ci.settings.py
       settings-target:
+        description: Path the project's settings.py loads its local settings from, e.g. myproject/local_settings.py
         type: string
-        default: dmoj/local_settings.py
+        required: true
+      database:
+        description: Database service to start, mysql (port 13306) or postgres (port 15432); user root, password root, database ci
+        type: string
+        default: mysql
       mysql-image:
         description: MySQL or MariaDB image; match production (Django 6 needs MySQL 8.4+ / MariaDB 10.6+)
         type: string
         default: mysql:8.4
+      postgres-image:
+        description: PostgreSQL image; match production (Django 6 needs PostgreSQL 15+)
+        type: string
+        default: postgres:17
       setup:
         description: Commands to run before the tests, one per line
         type: string
@@ -37,14 +46,32 @@ jobs:
       contents: read
     services:
       mysql:
-        image: ${{ inputs.mysql-image }}
+        image: ${{ inputs.database == 'mysql' && inputs.mysql-image || '' }}
         env:
           MYSQL_ROOT_PASSWORD: root
-          MYSQL_DATABASE: dmoj
+          MYSQL_DATABASE: ci
         ports:
           - 13306:3306
         options: --health-cmd="mysqladmin ping || mariadb-admin ping" --health-interval=10s --health-timeout=5s --health-retries=5
+      postgres:
+        image: ${{ inputs.database == 'postgres' && inputs.postgres-image || '' }}
+        env:
+          POSTGRES_USER: root
+          POSTGRES_PASSWORD: root
+          POSTGRES_DB: ci
+        ports:
+          - 15432:5432
+        options: --health-cmd="pg_isready -U root -d ci" --health-interval=10s --health-timeout=5s --health-retries=5
     steps:
+      - name: Check database input
+        env:
+          DATABASE: ${{ inputs.database }}
+        run: |
+          case "$DATABASE" in
+            mysql|postgres) ;;
+            *) echo "::error::database must be mysql or postgres, got '${DATABASE}'"; exit 1 ;;
+          esac
+
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
