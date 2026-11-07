@@ -1,0 +1,43 @@
+name: migration-numbering-check
+on:
+  workflow_call:
+
+jobs:
+  check:
+    name: numbering
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check file names and versions
+        run: |
+          set -euo pipefail
+          status=0
+          fail() { echo "::error file=$1::$2"; status=1; }
+
+          while read -r path; do
+            fail "${path}" "migrations belong in <environment>/<service>/"
+          done < <(find development production -mindepth 1 -maxdepth 1 -type f 2>/dev/null)
+
+          while read -r dir; do
+            service="${dir#*/}"
+            yq -e ".\"${service}\"" services.yaml > /dev/null 2>&1 || fail "${dir}" "${service} is not in services.yaml"
+            expected=1
+            while read -r path; do
+              name="${path##*/}"
+              if [[ ! "${name}" =~ ^([0-9]{6})_[A-Za-z0-9._-]+\.up\.sql$ ]]; then
+                fail "${path}" "expected NNNNNN_<name>.up.sql"
+                continue
+              fi
+              version=$((10#${BASH_REMATCH[1]}))
+              if (( version != expected )); then
+                fail "${path}" "expected version $(printf '%06d' "${expected}"), found $(printf '%06d' "${version}")"
+              fi
+              expected=$((version + 1))
+            done < <(find "${dir}" -mindepth 1 -maxdepth 1 | sort)
+            echo "${dir}: $((expected - 1)) migrations"
+          done < <(find development production -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
+
+          exit "${status}"
