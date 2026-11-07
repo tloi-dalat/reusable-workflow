@@ -1,0 +1,89 @@
+name: migration-replay-check
+on:
+  workflow_call:
+    inputs:
+      mariadb-image:
+        description: MariaDB image; match production
+        type: string
+        default: mariadb:11.8
+      postgres-image:
+        description: PostgreSQL image; match production
+        type: string
+        default: postgres:17
+      migrate-version:
+        description: golang-migrate release
+        type: string
+        default: v4.20.1
+
+jobs:
+  check:
+    name: replay
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    services:
+      mariadb:
+        image: ${{ inputs.mariadb-image }}
+        env:
+          MARIADB_ROOT_PASSWORD: root
+        ports:
+          - 13306:3306
+        options: --health-cmd="mariadb-admin ping -proot" --health-interval=10s --health-timeout=5s --health-retries=5
+      postgres:
+        image: ${{ inputs.postgres-image }}
+        env:
+          POSTGRES_USER: root
+          POSTGRES_PASSWORD: root
+          POSTGRES_DB: ci
+        ports:
+          - 15432:5432
+        options: --health-cmd="pg_isready -U root -d ci" --health-interval=10s --health-timeout=5s --health-retries=5
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install migrate
+        env:
+          MIGRATE_VERSION: ${{ inputs.migrate-version }}
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          curl -sSfL "https://github.com/golang-migrate/migrate/releases/download/${MIGRATE_VERSION}/migrate.linux-amd64.tar.gz" | tar -xz -C "${tmp}"
+          mkdir -p "${RUNNER_TEMP}/bin"
+          find "${tmp}" -type f -name 'migrate*' ! -name '*.md' -exec mv {} "${RUNNER_TEMP}/bin/migrate" \; -quit
+          chmod +x "${RUNNER_TEMP}/bin/migrate"
+          echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
+
+      - name: Replay every folder on an empty database
+        run: |
+          set -euo pipefail
+          status=0
+          while read -r dir; do
+            service="${dir#*/}"
+            engine="$(yq -e ".\"${service}\".engine" services.yaml)"
+            case "${engine}" in
+              mariadb)
+                mysql -h 127.0.0.1 -P 13306 -u root -proot \
+                  -e 'DROP DATABASE IF EXISTS replay; CREATE DATABASE replay CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci'
+                url='mysql://root:root@tcp(127.0.0.1:13306)/replay?multiStatements=true'
+                ;;
+              postgres)
+                PGPASSWORD=root psql -h 127.0.0.1 -p 15432 -U root -d ci -q \
+                  -c 'DROP DATABASE IF EXISTS replay' -c 'CREATE DATABASE replay'
+                url='postgres://root:root@127.0.0.1:15432/replay?sslmode=disable'
+                ;;
+              *)
+                echo "::error file=services.yaml::unknown engine '${engine}' for ${service}"
+                status=1
+                continue
+                ;;
+            esac
+            echo "::group::${dir} (${engine})"
+            if migrate -path "${dir}" -database "${url}" up; then
+              echo "::endgroup::"
+            else
+              echo "::endgroup::"
+              echo "::error file=${dir}::replay failed, see the log above"
+              status=1
+            fi
+          done < <(find development production -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
+          exit "${status}"
