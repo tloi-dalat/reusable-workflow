@@ -1,11 +1,6 @@
 name: atlas-migration
 on:
   workflow_call:
-    inputs:
-      tag:
-        description: Release tag of github.sha; generates the production migration. Empty on a pull request (development)
-        type: string
-        default: ''
     secrets:
       ATLAS_APP_ID:
         required: true
@@ -21,12 +16,10 @@ jobs:
     env:
       SERVICE: ${{ github.event.repository.name }}
       REPO: ${{ github.repository }}
-      SCHEMA: schema
       EVENT: ${{ github.event_name }}
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
-      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha }}
       PR: ${{ github.event.pull_request.number }}
-      TAG: ${{ inputs.tag }}
     steps:
       - id: app-token
         uses: actions/create-github-app-token@v3
@@ -40,12 +33,14 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          fetch-tags: true
 
       - name: Create the check and dispatch
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
+          [[ "${HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::run on a pull request or after the release workflow"; exit 1; }
           check() {
             gh api "repos/${REPO}/check-runs" -f name='atlas-generator / migration-status' -f head_sha="${HEAD_SHA}" "$@" --jq .id
           }
@@ -53,28 +48,26 @@ jobs:
           if [[ "${EVENT}" == pull_request ]]; then
             environment=development
             name="pr${PR}"
-            if [[ -z "$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}" -- "${SCHEMA}")" ]]; then
+            if [[ -z "$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}" -- schema)" ]]; then
               check -f status=completed -f conclusion=success \
-                -f "output[title]=No schema change" -f "output[summary]=This PR does not change ${SCHEMA}/." > /dev/null
+                -f "output[title]=No schema change" -f "output[summary]=This PR does not change schema/." > /dev/null
               exit 0
             fi
-          elif [[ -n "${TAG}" ]]; then
+          elif [[ "${EVENT}" == workflow_run ]]; then
             environment=production
-            name="${TAG}"
+            name=$(git tag --points-at "${HEAD_SHA}" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
+            [[ -n "${name}" ]] || { echo "::error::${HEAD_SHA} has no release tag"; exit 1; }
             PR=""
           else
-            echo "::error::run on a pull request, or pass the release tag"
+            echo "::error::unsupported event ${EVENT}"
             exit 1
           fi
 
-          if [[ ! -d "${SCHEMA}" ]]; then
-            echo "::error::${SCHEMA}/ does not exist"
-            exit 1
-          fi
+          git cat-file -e "${HEAD_SHA}:schema" 2> /dev/null || { echo "::error::schema/ does not exist at ${HEAD_SHA}"; exit 1; }
 
           id=$(check -f status=queued -f "output[title]=Generating the migration" \
-            -f "output[summary]=Diffing the live ${environment} database against ${SCHEMA}/.")
+            -f "output[summary]=Diffing the live ${environment} database against schema/.")
           gh workflow run generate.yaml --repo tloi-dalat/atlas-migration --ref main \
             -f environment="${environment}" -f service="${SERVICE}" -f sha="${HEAD_SHA}" \
             -f name="${name}" -f pr="${PR}" -f check-id="${id}"
-          echo "Dispatched ${environment} migration for ${SERVICE} ${name} (check ${id})." >> "${GITHUB_STEP_SUMMARY}"
+          echo "Dispatched the ${environment} migration of ${SERVICE} ${name} (check ${id})." >> "${GITHUB_STEP_SUMMARY}"
