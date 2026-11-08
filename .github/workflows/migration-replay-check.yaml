@@ -69,6 +69,11 @@ jobs:
               postgres)
                 PGPASSWORD=root psql -h 127.0.0.1 -p 15432 -U root -d ci -q \
                   -c 'DROP DATABASE IF EXISTS replay' -c 'CREATE DATABASE replay'
+                for role in $(yq ".\"${service}\".roles // [] | .[]" services.yaml); do
+                  if [[ -z "$(PGPASSWORD=root psql -h 127.0.0.1 -p 15432 -U root -d ci -tAc "SELECT 1 FROM pg_roles WHERE rolname = '${role}'")" ]]; then
+                    PGPASSWORD=root psql -h 127.0.0.1 -p 15432 -U root -d ci -q -c "CREATE ROLE \"${role}\""
+                  fi
+                done
                 url='postgres://root:root@127.0.0.1:15432/replay?sslmode=disable'
                 ;;
               *)
