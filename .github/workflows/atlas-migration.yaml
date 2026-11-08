@@ -19,6 +19,7 @@ jobs:
       EVENT: ${{ github.event_name }}
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha }}
+      SCHEMA_SHA: ${{ github.event_name == 'pull_request' && github.sha || github.event.workflow_run.head_sha }}
       PR: ${{ github.event.pull_request.number }}
     steps:
       - id: app-token
@@ -29,6 +30,8 @@ jobs:
           repositories: ${{ github.event.repository.name }},atlas-migration
           permission-actions: write
           permission-checks: write
+          permission-contents: read
+          permission-pull-requests: read
 
       - uses: actions/checkout@v7
         with:
@@ -49,9 +52,14 @@ jobs:
             environment=development
             name="pr${PR}"
             if [[ -z "$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}" -- schema)" ]]; then
-              check -f status=completed -f conclusion=success \
-                -f "output[title]=No schema change" -f "output[summary]=This PR does not change schema/." > /dev/null
-              exit 0
+              open=$(gh pr list --repo tloi-dalat/atlas-migration --head "${SERVICE}-${name}" --state open --json number --jq length)
+              applied=$(gh api "repos/tloi-dalat/atlas-migration/contents/development/${SERVICE}" \
+                --jq "[.[] | select(.name | endswith(\"_${name}.up.sql\"))] | length" 2> /dev/null || echo 0)
+              if [[ "${open}" == 0 && "${applied}" == 0 ]]; then
+                check -f status=completed -f conclusion=success \
+                  -f "output[title]=No schema change" -f "output[summary]=This PR does not change schema/." > /dev/null
+                exit 0
+              fi
             fi
           elif [[ "${EVENT}" == workflow_run ]]; then
             environment=production
@@ -63,11 +71,11 @@ jobs:
             exit 1
           fi
 
-          git cat-file -e "${HEAD_SHA}:schema" 2> /dev/null || { echo "::error::schema/ does not exist at ${HEAD_SHA}"; exit 1; }
+          git cat-file -e "${SCHEMA_SHA}:schema" 2> /dev/null || { echo "::error::schema/ does not exist at ${SCHEMA_SHA}"; exit 1; }
 
           id=$(check -f status=queued -f "output[title]=Generating the migration" \
             -f "output[summary]=Diffing the live ${environment} database against schema/.")
           gh workflow run generate.yaml --repo tloi-dalat/atlas-migration --ref main \
-            -f environment="${environment}" -f service="${SERVICE}" -f sha="${HEAD_SHA}" \
+            -f environment="${environment}" -f service="${SERVICE}" -f sha="${SCHEMA_SHA}" \
             -f name="${name}" -f pr="${PR}" -f check-id="${id}"
           echo "Dispatched the ${environment} migration of ${SERVICE} ${name} (check ${id})." >> "${GITHUB_STEP_SUMMARY}"
