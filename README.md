@@ -1,3 +1,3 @@
 # reusable-workflow
 
-Shared GitHub Actions workflows for TLOI.
+Shared GitHub Actions workflows.
